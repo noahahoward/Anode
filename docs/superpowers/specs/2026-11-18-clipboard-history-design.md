@@ -69,20 +69,32 @@ the folder with the rest of Anode's data (`--data`).
 
 - macOS lets Anode read the pasteboard without asking (`accessBehavior` is "always allowed" for it); the log says so each time it is turned on.
 - ⌘V sent as above pastes into a plain window; a window with no Edit menu ignores it (the test window had to be given one).
-- The panel opens centred, 520 wide, its top edge 30% of the way down the visible screen (where the system's own ⌘Space panel opens), at window level 101, and the app in front stays in front (checked: it is still the front app while the panel is up).
+- The panel opens centred, 520 wide, its top edge where the system's own ⌘Space panel opens, at window level 101, and the app in front stays in front (checked: it is still the front app while the panel is up).
 
 ## The look: measured from macOS 27.3's own ⌘Space panel (2026-11-19)
 
 On this Mac ⌘Space is hosted by Siri ("Search or Ask"), and the panel is two shapes: a bar and, 10 points under it, a card. Both are
-liquid glass with a black tint over it; Clipboard History is drawn the same way.
+liquid glass (the `.clear` style) with a black tint over it; Clipboard History is drawn the same way.
 
 | | measured | |
 | --- | --- | --- |
-| Bar | 520 × 87 pt, corners nearly a capsule; text starts 39 pt in, about 21 pt; the picture of the match 33 pt at the right | tint: black 1.0 at the top, 0.54 at the bottom |
-| Card | up to 410 pt; chips 25 pt tall at 21 pt from its top; rows 62 pt apart; icon 36, title 17, selection a capsule inset 14.5 | tint: 0.5 at the top, 0.2 at the bottom |
-| Place | top edge 30% of the visible height down, centred | 380 of 1169 on a 39 pt menu bar |
-| Fade | opacity 0 to 1 and back in about 0.11 s, evenly | window alpha read every 4 ms |
+| Bar | 520 × 87 pt, a full capsule (radius 43.5); text starts 39 pt in, about 21 pt; the picture of the match 33 pt at the right | tint: black 1.0 at the top, 0.61 at the bottom, no rim at the top, a rim at the bottom |
+| Card | up to 410 pt, top corners about 38; chips 25 pt tall at 21 pt from its top; rows 62 pt apart; icon 36, title 17, selection a capsule inset 14.5 | tint: 0.55 at the top, 0.30 at 410 pt down; rims at both edges |
+| Place | centred; the top edge is where a 137 pt window would be centred at 30% of the screen's height (282 of 1169 on this Mac); the window grows downwards | it can be dragged by the bar and opens where it was left (below) |
+| Opening | opacity 0 to 1 evenly over about 0.11 s, while it scales from about 13% larger, about the middle of that 137 pt window, on a spring (period about 0.28 s, damping 0.72, a dip of 0.6% under its size) | sampled from the fitted curve every 1/120 s |
+| Closing | opacity 1 to 0 evenly over about 0.11 s while it grows to about 7% larger | |
 | Caret | white bar about 2.5 pt wide, as tall as the line, with a glow; blinks at the system rate | |
+
+How the tint was fitted matters. Over the clear glass (which passes a backdrop's brightness B as 0.875 B + 0.125) a black tint of
+opacity a leaves (1 - a) of it, and a is read from the system panel over SOLID white, grey and black backdrops down the panel. Fitted to
+stripes it came out wrong: the system's glass blurs the card (a hard edge fades over about 20 points; the bar's over 3) and leaks light
+into dark areas from far off, so stripes under-read its transparency. The rims are fitted pixel by pixel (two to the point): a hard step in
+the last two pixels and a gradual brightening over 4 or 5 points before it.
+
+Dragging (logged from the system's window every 10 ms): it follows the pointer one for one, catches on the horizontal middle and on that
+default height within 5 points (a tick from the trackpad), is held until the pointer has pulled it 24 points sideways or 16 up or down,
+stops at the screen's edges and under the menu bar (the pointer may go on; it comes back when the pointer does), and opens again where it
+was left. It is whole points, so the hard rims stay on the pixels. All of it is `ClipboardPlacement`.
 
 The chips are the kinds in the history (Text, Links, Images, Files, Pinned); Tab moves along them, Shift-Tab back.
 
@@ -90,6 +102,9 @@ The chips are the kinds in the history (Text, Links, Images, Files, Pinned); Tab
 
 - Whether releasing Globe after Anode swallows the Space still triggers macOS's own Globe action (the emoji picker, or dictation) cannot
   be tested with posted keys: it needs the real keyboard.
+- The system card blurs what is behind it; this one does not (a system blur layer under the glass was far too wide, 33 points against 20,
+  and added a veil of light the system's glass does not have). The tint is fitted to flat areas, so large areas match and fine detail through the
+  card is sharper than the system's.
 - The panel is always the dark glass (as the system's is in a dark appearance); in a light appearance the system's may differ and was not measured.
 - Image and file entries are listed and pasted, but image search is by the word "image" only (there is no OCR).
 - A copy of Universal Clipboard content is never recorded, so it cannot be searched.

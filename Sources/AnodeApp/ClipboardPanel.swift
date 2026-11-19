@@ -73,6 +73,25 @@ enum ClipboardPanelMetrics {
     // Appearing and going: the panel's opacity, read every few milliseconds, rose in about 0.11 s and fell in about 0.11 s, evenly.
     static let fadeInDuration: TimeInterval = 0.11
     static let fadeOutDuration: TimeInterval = 0.11
+    /// Appearing is a drop in, measured from frames of the system's panel (2026-11-19) over a white backdrop: it starts about 13% larger,
+    /// scaled about the middle of its 137 point window, and settles on a spring (period 0.3 s, damping 0.72, a dip of 0.6% under its
+    /// size on the way) while its opacity rises evenly. Going is a fade over about 0.11 s in which it grows to about 7% larger.
+    /// (Times taken from the frames' own presentation times; the system's were read with the delivery times, about 6% slow, and
+    /// corrected by its window's opacity ramp, read every 4 ms.)
+    static let appearScale: CGFloat = 1.13
+    static let springFrequency: Double = 22.5          // rad/s: a period of 0.28 s
+    static let springDamping: Double = 0.72            // the damping ratio
+    static let springSettle: TimeInterval = 0.6
+    /// The panel's scale `t` seconds after it starts to appear: a damped spring from `appearScale` to 1 (fitted to the system's own,
+    /// frame by frame). Core Animation's own spring takes the same numbers and runs about 40% slow, so the curve is sampled instead.
+    static func appearScale(at t: Double) -> CGFloat {
+        let w = springFrequency, z = springDamping
+        let wd = w * (1 - z * z).squareRoot()
+        let x0 = Double(appearScale) - 1
+        let decay = exp(-z * w * t)
+        return CGFloat(1 + decay * (x0 * cos(wd * t) + (z * w * x0 / wd) * sin(wd * t)))
+    }
+    static let disappearScale: CGFloat = 1.07
 
     /// The tint's opacity down the bar (`y` points from its top, of `height`) and down the card (`y` from its top): measured with solid
     /// white, grey and black behind the system's panel and this one (2026-11-19). Over the clear glass, which passes the backdrop's
@@ -152,6 +171,7 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     private weak var controller: ClipboardHistoryController?
     private let content = ClipboardContentView()
     private lazy var host = ClipboardShadowHost(content: content)
+    private let stage = NSView()
     private var monitors: [Any] = []
     private let editor = ClipboardFieldEditor()
     private(set) var shown = false
@@ -176,7 +196,13 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         // Always the dark glass, as the system's own panel is: the black tint is part of how it looks.
         appearance = NSAppearance(named: .darkAqua)
         delegate = self
-        contentView = host
+        // The drop in is a transform of the host's layer, so the host sits in a plain view that fills the window.
+        stage.wantsLayer = true
+        stage.frame = NSRect(x: 0, y: 0, width: ClipboardPanelMetrics.width + 2 * m, height: ClipboardPanelMetrics.pillHeight + 2 * m)
+        host.frame = stage.bounds
+        host.autoresizingMask = [.width, .height]
+        stage.addSubview(host)
+        contentView = stage
         content.onLayout = { [weak host] in host?.updateShadow() }
         setAccessibilityIdentifier("dev.anode.clipboardHistory")
         setAccessibilityLabel("Clipboard History")
@@ -208,7 +234,9 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         orderFrontRegardless()
         makeKey()
         makeFirstResponder(content.field)
+        host.layer?.removeAnimation(forKey: "going")
         if animated {
+            drop(in: true)
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = ClipboardPanelMetrics.fadeInDuration
                 context.timingFunction = CAMediaTimingFunction(name: .linear)
@@ -238,13 +266,14 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
             completion()
             return
         }
+        drop(in: false)
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = ClipboardPanelMetrics.fadeOutDuration
             context.timingFunction = CAMediaTimingFunction(name: .linear)
             animator().alphaValue = 0
         }, completionHandler: { [weak self] in
             // Opened again while it faded: it stays, and the fade-in has taken over.
-            if let self, !self.shown { self.orderOut(nil); self.alphaValue = 1 }
+            if let self, !self.shown { self.orderOut(nil); self.alphaValue = 1; self.host.layer?.removeAnimation(forKey: "going") }
             completion()
         })
     }
@@ -257,6 +286,50 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         // The paste itself puts the panel away first; this is the panel losing the key to something else.
         dismissFromPanel()
+    }
+
+    // ── The drop in ─────────────────────────────────────────────────────────
+
+    /// The host's layer scaled by `scale` about the middle of a 137 point window at the panel's top: the point the system's panel
+    /// scales about (measured). Pure arithmetic on the layer's own anchor, so it holds whatever the anchor point is.
+    func dropTransform(scale: CGFloat) -> CATransform3D {
+        guard let layer = host.layer else { return CATransform3DIdentity }
+        let size = host.bounds.size
+        let m = ClipboardPanelMetrics.shadowMargin
+        let about = CGPoint(x: size.width / 2, y: size.height - m - ClipboardPlacement.referenceHeight / 2)
+        let anchor = CGPoint(x: layer.anchorPoint.x * size.width, y: layer.anchorPoint.y * size.height)
+        var t = CATransform3DIdentity
+        t.m11 = scale
+        t.m22 = scale
+        t.m41 = (about.x - anchor.x) * (1 - scale)
+        t.m42 = (about.y - anchor.y) * (1 - scale)
+        return t
+    }
+
+    /// Coming in: from larger, on a spring. Going: growing a little as it fades.
+    private func drop(in appearing: Bool) {
+        guard let layer = host.layer else { return }
+        if appearing {
+            // sampled every 1/120 s, so it follows the spring however the screen's own rate runs
+            let step = 1.0 / 120.0
+            let times = Array(stride(from: 0.0, through: ClipboardPanelMetrics.springSettle, by: step))
+            let frames = CAKeyframeAnimation(keyPath: "transform")
+            frames.values = times.map { NSValue(caTransform3D: dropTransform(scale: ClipboardPanelMetrics.appearScale(at: $0))) }
+            frames.keyTimes = times.map { NSNumber(value: $0 / ClipboardPanelMetrics.springSettle) }
+            frames.calculationMode = .linear
+            frames.duration = ClipboardPanelMetrics.springSettle
+            layer.add(frames, forKey: "drop")
+        } else {
+            layer.removeAnimation(forKey: "drop")
+            let grow = CABasicAnimation(keyPath: "transform")
+            grow.fromValue = NSValue(caTransform3D: CATransform3DIdentity)
+            grow.toValue = NSValue(caTransform3D: dropTransform(scale: ClipboardPanelMetrics.disappearScale))
+            grow.duration = ClipboardPanelMetrics.fadeOutDuration
+            grow.timingFunction = CAMediaTimingFunction(name: .linear)
+            grow.fillMode = .forwards
+            grow.isRemovedOnCompletion = false
+            layer.add(grow, forKey: "going")
+        }
     }
 
     // ── Where it sits ───────────────────────────────────────────────────────

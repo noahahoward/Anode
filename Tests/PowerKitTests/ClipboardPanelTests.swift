@@ -172,6 +172,47 @@ final class ClipboardPanelTests: XCTestCase {
         XCTAssertLessThanOrEqual(f.maxY, 1130)
     }
 
+    // ── Appearing ───────────────────────────────────────────────────────────
+
+    /// The system's panel drops in from larger, about the middle of its 137 point window: that point does not move, the rest does.
+    func testTheDropInScalesAboutTheMiddleOfAOneThirtySevenPointWindowAtThePanelsTop() {
+        typealias M = ClipboardPanelMetrics
+        let panel = ClipboardPanel()
+        let host = panel.contentView!.subviews.first!
+        let layer = host.layer!
+        let size = host.bounds.size
+        XCTAssertEqual(size.width, M.width + 2 * M.shadowMargin)
+
+        let identity = panel.dropTransform(scale: 1)
+        XCTAssertEqual(identity.m11, 1); XCTAssertEqual(identity.m41, 0, accuracy: 0.0001); XCTAssertEqual(identity.m42, 0, accuracy: 0.0001)
+
+        let s: CGFloat = M.appearScale
+        let t = panel.dropTransform(scale: s)
+        XCTAssertEqual(t.m11, s); XCTAssertEqual(t.m22, s)
+        // where a point of the host's goes: about the layer's anchor, then the transform's translation
+        let anchor = CGPoint(x: layer.anchorPoint.x * size.width, y: layer.anchorPoint.y * size.height)
+        func moved(_ p: CGPoint) -> CGPoint { CGPoint(x: anchor.x + s * (p.x - anchor.x) + t.m41, y: anchor.y + s * (p.y - anchor.y) + t.m42) }
+        let about = CGPoint(x: size.width / 2, y: size.height - M.shadowMargin - ClipboardPlacement.referenceHeight / 2)
+        XCTAssertEqual(moved(about).x, about.x, accuracy: 0.001)
+        XCTAssertEqual(moved(about).y, about.y, accuracy: 0.001)
+        let corner = CGPoint(x: M.shadowMargin, y: size.height - M.shadowMargin)       // the panel's top left
+        XCTAssertLessThan(moved(corner).x, corner.x, "starting larger, the left edge is further out")
+        XCTAssertGreaterThan(moved(corner).y, corner.y, "and the top edge is higher")
+    }
+
+    func testTheSpringStartsLargeDipsUnderOneAndSettles() {
+        typealias M = ClipboardPanelMetrics
+        XCTAssertEqual(M.appearScale(at: 0), 1.13, accuracy: 0.0001)
+        XCTAssertEqual(M.appearScale, 1.13, accuracy: 0.001)
+        // measured: it is back to its size at about 0.12 s after starting, 0.6% under it a little after, and settled by 0.5 s
+        XCTAssertEqual(M.appearScale(at: 0.12), 1.0, accuracy: 0.02)
+        let low = stride(from: 0.1, through: 0.4, by: 0.005).map { M.appearScale(at: $0) }.min()!
+        XCTAssertLessThan(low, 1.0)
+        XCTAssertGreaterThan(low, 0.985, "a dip of well under 1.5%")
+        XCTAssertEqual(M.appearScale(at: M.springSettle), 1.0, accuracy: 0.001)
+        XCTAssertEqual(M.disappearScale, 1.07, accuracy: 0.001)
+    }
+
     // ── Rows ────────────────────────────────────────────────────────────────
 
     private func entry(_ preview: String, kind: ClipboardKind = .text, detail: String? = nil, source: String? = "Editor",
