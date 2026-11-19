@@ -141,6 +141,7 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     func show(controller: ClipboardHistoryController) {
         self.controller = controller
         content.controller = controller
+        content.applyLab()
         content.reset()
         place()
         let animated = DisplayAccessibility.current.animates
@@ -399,6 +400,21 @@ final class ClipboardShapeView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// CALIBRATION (temporary): `anode.debug.clipboardGlass` in the settings domain, JSON
+    /// `{"style":"clear|regular","pill":[[0,0,1],[1,0,0.54]],"card":[[0,0,0.5],[1,0,0.2]]}`, each stop (how far down, grey, opacity).
+    /// Read each time the panel opens, so the glass can be tuned against the system's without restarting.
+    func applyLab() {
+        guard let text = UserDefaults(suiteName: "com.anode.settings")?.string(forKey: "anode.debug.clipboardGlass"),
+              let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { return }
+        if #available(macOS 26.0, *), let glass = material as? NSGlassEffectView, let style = json["style"] as? String {
+            glass.style = style == "clear" ? .clear : .regular
+        }
+        if let raw = json[kind == .pill ? "pill" : "card"] as? [[Double]] {
+            let stops = raw.filter { $0.count == 3 }.map { (location: CGFloat($0[0]), gray: CGFloat($0[1]), alpha: CGFloat($0[2])) }
+            if stops.count >= 2 { tint.set(stops: stops) }
+        }
+    }
+
     override func layout() {
         super.layout()
         material.frame = bounds
@@ -421,11 +437,15 @@ final class ClipboardTintView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func set(top: CGFloat, bottom: CGFloat) {
+    func set(top: CGFloat, bottom: CGFloat) { set(stops: [(0, 0, top), (1, 0, bottom)]) }
+
+    /// `stops`: (how far down, 0...1; the grey, 0 black...1 white; the opacity).
+    func set(stops: [(location: CGFloat, gray: CGFloat, alpha: CGFloat)]) {
         guard let gradient = layer as? CAGradientLayer else { return }
         gradient.startPoint = CGPoint(x: 0.5, y: 1)      // the view is not flipped: y up, so 1 is the top
         gradient.endPoint = CGPoint(x: 0.5, y: 0)
-        gradient.colors = [NSColor.black.withAlphaComponent(top).cgColor, NSColor.black.withAlphaComponent(bottom).cgColor]
+        gradient.colors = stops.map { NSColor(white: $0.gray, alpha: $0.alpha).cgColor }
+        gradient.locations = stops.map { NSNumber(value: Double($0.location)) }
     }
 }
 
@@ -518,6 +538,8 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
         emptyLabel.alignment = .center
         card.body.addSubview(emptyLabel)
     }
+
+    func applyLab() { pill.applyLab(); card.applyLab() }
 
     // ── What is listed ──────────────────────────────────────────────────────
 
