@@ -18,12 +18,14 @@ It is a Beta Features section, off until asked for.
 | ⌘1 … ⌘9 | Paste that row |
 | ⌘⌫ | Delete the entry |
 | ⌘P | Pin it (pinned entries are listed first and are never dropped by the time or count limits) |
+| Tab, ⇧Tab | Next or previous chip (Text, Links, Images, Files, Pinned) |
 | esc | Clear the search; a second esc closes the panel |
 | a click anywhere else | Closes it |
 
 The panel is a non-activating panel: Anode never becomes the active app, so the app being pasted into stays in front. It fades
-in and out. Each row has the source app's icon (an image's own picture, a file's icon), the first line, and
-"detail · app · time ago" under it. "link", "image", "file" and "text" are searchable words as well as the text itself.
+in and out. Each row has the source app's icon (an image's own picture, a file's icon), the first line, "detail · app · time ago" under it,
+and ⌘1 to ⌘9 at the right. "link", "image", "file" and "text" are searchable words as well as the text itself. Tab and the chips above
+the list narrow it to a kind.
 
 The section (Settings → Beta Features → Clipboard History) has: the switch; the status line; the shortcut (changed in Shortcuts…, where
 Globe can be recorded); how long entries are kept (30 minutes … 90 days, or forever; a day by default); how many (10 to 5000, 500);
@@ -67,7 +69,7 @@ the folder with the rest of Anode's data (`--data`).
 
 - macOS lets Anode read the pasteboard without asking (`accessBehavior` is "always allowed" for it); the log says so each time it is turned on.
 - ⌘V sent as above pastes into a plain window; a window with no Edit menu ignores it (the test window had to be given one).
-- The panel opens centred, 680 wide, its top edge a fifth of the way down the visible screen, at window level 101.
+- The panel opens centred, 520 wide, its top edge 30% of the way down the visible screen (where the system's own ⌘Space panel opens), at window level 101, and the app in front stays in front (checked: it is still the front app while the panel is up).
 
 ## The look: measured from macOS 27.3's own ⌘Space panel (2026-11-19)
 
