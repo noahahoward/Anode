@@ -38,9 +38,9 @@ enum ClipboardPanelMetrics {
     static let searchTextDrop: CGFloat = 3
     static let accessorySize: CGFloat = 33           // measured: the picture at the bar's right
     static let accessoryCentreFromRight: CGFloat = 46.5
-    /// Black over the glass, at the bar's top and at its bottom, and the card's (measured over a light backdrop).
-    static let pillTint: (top: CGFloat, bottom: CGFloat) = (1.0, 0.54)
-    static let cardTint: (top: CGFloat, bottom: CGFloat) = (0.5, 0.2)
+    /// How far the glass reaches past the shape on every side, where the shape's own clip cuts it off: the glass draws a bright rim and
+    /// bends what is behind it at its edge, and the system's panel shows neither on the bar's top and sides.
+    static let glassBleed: CGFloat = 4
 
     // The chips
     static let chipsTop: CGFloat = 21                // measured, from the card's top
@@ -67,6 +67,25 @@ enum ClipboardPanelMetrics {
     // Appearing and going: the panel's opacity, read every few milliseconds, rose in about 0.11 s and fell in about 0.11 s, evenly.
     static let fadeInDuration: TimeInterval = 0.11
     static let fadeOutDuration: TimeInterval = 0.11
+
+    /// What is laid over the glass, from the top down: (how far down in points, a negative one from the bottom; the grey; the opacity).
+    /// MEASURED over a black and white striped backdrop: the clear glass passes about 88% of what is behind it and adds 12% light;
+    /// these are what bring the bar to the system's 0% passing at its top and 31% at its bottom, and the card's 36% to 55%, with the
+    /// system's added light, plus the rims (the bar's is at its bottom edge only; the card's at both).
+    static func tintStops(card: Bool, height: CGFloat) -> [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] {
+        if !card {
+            let h = max(height, 1)
+            let a = { (y: CGFloat) in 1.0 - 0.38 * y / h }       // 1.0 at the top, 0.62 at the bottom
+            return [(0, 0, a(0)), (-3, 0, a(h - 3)), (-1.2, 0, a(h - 1.2)), (-1.0, 1.0, 0.17), (h, 1.0, 0.17)]
+        }
+        let h = max(height, 1)
+        let along = { (y: CGFloat) in min(1, y / 410) }            // the curve is drawn for the full 410 and cut off where the card ends
+        let gray = { (y: CGFloat) in 0.07 + 0.03 * along(y) }
+        let alpha = { (y: CGFloat) in 0.60 - 0.23 * along(y) }
+        return [(0, 0.6, 0.58), (1.0, 0.6, 0.58), (1.0, 0.45, 0.50), (2.0, 0.45, 0.50), (2.0, 0.2, 0.40), (3.0, 0.2, 0.40),
+                (3.0, gray(3), alpha(3)), (h - 3, gray(h - 3), alpha(h - 3)), (h - 1.2, gray(h - 1.2), alpha(h - 1.2)),
+                (h - 1.0, 1.0, 0.20), (h, 1.0, 0.20)]
+    }
 
     /// The card's height for `rows` rows (nil: no card). Pure, for tests.
     static func cardHeight(rows: Int, hasQuery: Bool) -> CGFloat? {
@@ -362,13 +381,15 @@ final class ClipboardShapeView: NSView {
     /// Views, not bare layers: the glass is drawn over a layer of its parent's, and under a view added after it.
     private let tint = ClipboardTintView()
     private let edge = EdgeView()
+    private var labBleed: CGFloat?
 
     init(kind: Kind) {
         self.kind = kind
         let r = kind == .pill ? ClipboardPanelMetrics.pillRadius : ClipboardPanelMetrics.cardRadius
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
-            glass.cornerRadius = r
+            glass.cornerRadius = r + ClipboardPanelMetrics.glassBleed
+            glass.style = .clear
             material = glass
         } else {
             let v = NSVisualEffectView()
@@ -384,8 +405,7 @@ final class ClipboardShapeView: NSView {
         layer?.masksToBounds = true       // nothing square shows at the corners, and the window's shadow follows this shape
         addSubview(material)
 
-        let tints = kind == .pill ? ClipboardPanelMetrics.pillTint : ClipboardPanelMetrics.cardTint
-        tint.set(top: tints.top, bottom: tints.bottom)
+        tint.stops = { [kind] h in ClipboardPanelMetrics.tintStops(card: kind == .card, height: h) }
         addSubview(tint)
 
         addSubview(body)
@@ -393,8 +413,7 @@ final class ClipboardShapeView: NSView {
         edge.wantsLayer = true
         edge.layer?.cornerRadius = r
         edge.layer?.cornerCurve = .continuous
-        edge.layer?.borderWidth = 0.5
-        edge.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        edge.layer?.borderWidth = 0          // the rims are in the tint's stops, where the system's panel has them
         addSubview(edge)
     }
 
@@ -409,15 +428,19 @@ final class ClipboardShapeView: NSView {
         if #available(macOS 26.0, *), let glass = material as? NSGlassEffectView, let style = json["style"] as? String {
             glass.style = style == "clear" ? .clear : .regular
         }
+        if let bleed = json["bleed"] as? Double { labBleed = CGFloat(bleed); needsLayout = true }
         if let raw = json[kind == .pill ? "pill" : "card"] as? [[Double]] {
-            let stops = raw.filter { $0.count == 3 }.map { (location: CGFloat($0[0]), gray: CGFloat($0[1]), alpha: CGFloat($0[2])) }
-            if stops.count >= 2 { tint.set(stops: stops) }
+            let stops = raw.filter { $0.count == 3 }.map { (y: CGFloat($0[0]), gray: CGFloat($0[1]), alpha: CGFloat($0[2])) }
+            if stops.count >= 2 { tint.stops = { _ in stops } }
         }
     }
 
     override func layout() {
         super.layout()
-        material.frame = bounds
+        // The glass is bigger than the shape; the shape's clip (rounded corners, `masksToBounds`) cuts the rest off.
+        let bleed = labBleed ?? ClipboardPanelMetrics.glassBleed
+        material.frame = bounds.insetBy(dx: -bleed, dy: -bleed)
+        if #available(macOS 26.0, *), let glass = material as? NSGlassEffectView { glass.cornerRadius = (kind == .pill ? ClipboardPanelMetrics.pillRadius : ClipboardPanelMetrics.cardRadius) + bleed }
         body.frame = bounds
         tint.frame = bounds
         edge.frame = bounds
@@ -437,15 +460,20 @@ final class ClipboardTintView: NSView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func set(top: CGFloat, bottom: CGFloat) { set(stops: [(0, 0, top), (1, 0, bottom)]) }
+    /// Stops in points from the top (a negative one is from the bottom): (how far down; the grey, 0 black...1 white; the opacity).
+    /// Worked out against the view's height each time it is laid out.
+    var stops: ((_ height: CGFloat) -> [(y: CGFloat, gray: CGFloat, alpha: CGFloat)])? { didSet { needsLayout = true } }
 
-    /// `stops`: (how far down, 0...1; the grey, 0 black...1 white; the opacity).
-    func set(stops: [(location: CGFloat, gray: CGFloat, alpha: CGFloat)]) {
-        guard let gradient = layer as? CAGradientLayer else { return }
+    override func layout() {
+        super.layout()
+        guard let gradient = layer as? CAGradientLayer, let stops, bounds.height > 1 else { return }
         gradient.startPoint = CGPoint(x: 0.5, y: 1)      // the view is not flipped: y up, so 1 is the top
         gradient.endPoint = CGPoint(x: 0.5, y: 0)
-        gradient.colors = stops.map { NSColor(white: $0.gray, alpha: $0.alpha).cgColor }
-        gradient.locations = stops.map { NSNumber(value: Double($0.location)) }
+        let h = bounds.height
+        let placed = stops(h).map { (loc: min(1, max(0, ($0.y < 0 ? h + $0.y : $0.y) / h)), gray: $0.gray, alpha: $0.alpha) }
+            .sorted { $0.loc < $1.loc }
+        gradient.colors = placed.map { NSColor(white: $0.gray, alpha: $0.alpha).cgColor }
+        gradient.locations = placed.map { NSNumber(value: Double($0.loc)) }
     }
 }
 
