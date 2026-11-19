@@ -387,14 +387,16 @@ final class ClipboardPanelTests: XCTestCase {
         let feather = BackdropBlurView.Feather(cornerRadius: 38, inset: M.frostFeatherInset, sigma: M.frostFeatherSigma)
         let image = try XCTUnwrap(BackdropBlurView.featherMask(size: size, shape: shape, feather: feather, scale: 1))
         let rep = NSBitmapImageRep(cgImage: image)
-        func gray(_ x: Int, fromBottom y: Int) -> CGFloat { rep.colorAt(x: x, y: rep.pixelsHigh - 1 - y)!.whiteComponent }
-        XCTAssertLessThan(gray(260, fromBottom: 0), 0.1, "clear at the bottom edge")
-        XCTAssertGreaterThan(gray(260, fromBottom: 20), 0.95, "whole 20 points in")
-        XCTAssertGreaterThan(gray(260, fromBottom: 7), 0.3)
-        XCTAssertLessThan(gray(260, fromBottom: 7), 0.7, "half way at the inset")
-        XCTAssertLessThan(gray(0, fromBottom: 160), 0.1, "clear at the left edge")
-        XCTAssertGreaterThan(gray(40, fromBottom: 160), 0.95)
-        XCTAssertLessThan(gray(260, fromBottom: 323), 0.1, "clear at the top edge of the shape, not the view's")
+        // the mask's alpha, `y` points up from the bottom of the picture
+        func gray(_ x: Int, fromBottom y: Int) -> CGFloat { rep.colorAt(x: x, y: rep.pixelsHigh - 1 - y)!.alphaComponent }
+        XCTAssertLessThan(gray(260, fromBottom: 0), 0.05, "clear at the bottom edge")
+        XCTAssertLessThan(gray(260, fromBottom: 7), 0.05, "and still clear well in: the glass's lens takes what it bends from there")
+        XCTAssertGreaterThan(gray(260, fromBottom: 22), 0.3)
+        XCTAssertLessThan(gray(260, fromBottom: 22), 0.7, "half way at the inset")
+        XCTAssertGreaterThan(gray(260, fromBottom: 45), 0.95, "whole well inside")
+        XCTAssertLessThan(gray(0, fromBottom: 160), 0.05, "clear at the left edge")
+        XCTAssertGreaterThan(gray(45, fromBottom: 160), 0.95)
+        XCTAssertLessThan(gray(260, fromBottom: 323), 0.05, "clear at the top edge of the shape, not the view's")
         XCTAssertLessThan(gray(2, fromBottom: 2), 0.05, "and at the corner")
     }
 

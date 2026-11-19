@@ -44,10 +44,12 @@ enum ClipboardPanelMetrics {
     /// about 20 points: a sigma of 8), its bar only a little (about 3.4 points: 1.5). See `BackdropBlurView`.
     static let cardBlur: CGFloat = 8
     static let pillBlur: CGFloat = 1.5
-    /// The frost lightens toward the edge: the blur fades out over the last few points of each shape (its mask is a rounded rectangle this
-    /// far in from the edge, blurred by this much), so the glass's rim bends a sharper backdrop there, as the system's does.
-    static let frostFeatherInset: CGFloat = 7
-    static let frostFeatherSigma: CGFloat = 4
+    /// The frost lightens toward the edge: the blur fades out over the last points of each shape (its mask is a rounded rectangle this
+    /// far in from the edge, blurred by this much), so the glass's rim bends a sharper backdrop there, as the system's does. The glass's
+    /// lens takes what it bends from well inside the edge, so the clear band has to be that wide: with 7 points the lens showed only the
+    /// blurred backdrop; at 22 the detail in the bottom 20 points is that of the system's (measured: s.d. of luma 0.07 against 0.08).
+    static let frostFeatherInset: CGFloat = 22
+    static let frostFeatherSigma: CGFloat = 6
     /// The card's glass is not extended past its bottom: its own edge shows there, which bends what is behind it. (The system's card has
     /// none; this is a choice, for a thicker look at the bottom.)
     static let cardBottomBleed: CGFloat = 0

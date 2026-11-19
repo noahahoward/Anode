@@ -73,18 +73,18 @@ final class BackdropBlurView: NSView {
         blurLayer.mask = mask
     }
 
-    /// The mask: white (the blur shows) inside a rounded rectangle `feather.inset` in from `shape`'s edge, blurred so it fades to nothing
+    /// The mask (its alpha): whole (the blur shows) inside a rounded rectangle `feather.inset` in from `shape`'s edge, blurred so it fades to nothing
     /// at the edge. `shape` is in the view's coordinates (y up).
     static func featherMask(size: CGSize, shape: CGRect, feather: Feather, scale: CGFloat) -> CGImage? {
         let w = Int((size.width * scale).rounded()), h = Int((size.height * scale).rounded())
         guard w > 1, h > 1,
               let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
-        context.setFillColor(gray: 0, alpha: 1)
-        context.fill(CGRect(x: 0, y: 0, width: w, height: h))
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        // A layer's mask is read from its alpha: clear where the blur is not wanted, white where it is.
+        context.clear(CGRect(x: 0, y: 0, width: w, height: h))
         let inner = shape.insetBy(dx: feather.inset, dy: feather.inset)
         let r = max(0, feather.cornerRadius - feather.inset)
-        context.setFillColor(gray: 1, alpha: 1)
+        context.setFillColor(red: 1, green: 1, blue: 1, alpha: 1)
         context.addPath(CGPath(roundedRect: CGRect(x: inner.minX * scale, y: inner.minY * scale, width: inner.width * scale, height: inner.height * scale),
                                cornerWidth: r * scale, cornerHeight: r * scale, transform: nil))
         context.fillPath()

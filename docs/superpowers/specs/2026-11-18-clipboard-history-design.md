@@ -109,7 +109,10 @@ The chips are the kinds in the history (Text, Links, Images, Files, Pinned); Tab
   (white, with small and large type and coloured blocks) against the system's: the colour of a thin block behind the card is within 8%,
   the mean brightness down the card within 0.02, the detail left in flat areas the same. The system's blur has heavier tails than a
   gaussian (see above); not reproduced. NSVisualEffectView materials (a veil of colour, one radius, 33 points) and `.regular` glass were
-  tried first and are not used. A `NSGlassEffectView` made with a frame (`init(frame:)`) comes out heavily frosted whatever its style; made
+  tried first and are not used. The frost lightens toward each shape's edge, as the system's does, so that the glass's rim bends a sharper
+  backdrop there: the blur layer has a mask (alpha: a rounded rectangle 22 points in from the shape's edge, blurred by 6), because the glass's
+  lens takes what it bends from well inside the edge (with 7 points the lens still showed only blurred backdrop). A layer's mask is read from
+  its alpha, not its grey: a grey picture masked nothing. A `NSGlassEffectView` made with a frame (`init(frame:)`) comes out heavily frosted whatever its style; made
   with `init()` and given its frame later, as here, it is the clear glass.
 - The list bends at the card's bottom edge: a deliberate addition (the system's panel has none). A `CIBumpDistortionLinear` on the list's layer,
   20 points deep, pinches the lowest words and icons toward the edge the way the glass's own edge bends what is behind it; the glass is not
