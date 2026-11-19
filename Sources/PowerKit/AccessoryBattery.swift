@@ -37,13 +37,6 @@ public struct AccessoryBattery: Equatable {
         }
     }
 
-    /// Whether both buds of the group are listed. A bud in the case is listed too, so this says the pair is there, not that
-    /// both are in the ears; macOS refuses Adaptive Audio unless both are, and Anode shows its reason.
-    public static func bothBudsPresent(in batteries: [AccessoryBattery], group: String) -> Bool {
-        let parts = Set(batteries.filter { $0.group == group }.map(\.part))
-        return parts.contains(.left) && parts.contains(.right)
-    }
-
     private static func normalised(_ name: String) -> String {
         name.replacingOccurrences(of: "\u{2019}", with: "'").replacingOccurrences(of: "\u{FFFD}", with: "'").lowercased()
     }

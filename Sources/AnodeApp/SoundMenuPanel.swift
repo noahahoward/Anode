@@ -423,7 +423,7 @@ final class SoundMenuContentView: NSView {
         finishLeaving()
         clip.subviews.forEach { $0.removeFromSuperview() }
         for v in subviews where v !== material && v !== baseLift && v !== solid { v.removeFromSuperview() }   // the edge is added again at the end
-        let layout = SoundMenuLayout.frames(for: model)
+        let layout = SoundMenuLayout.frames(for: model, noticeLines: model.notice.map(Self.noticeLines) ?? 2)
         size = NSSize(width: SoundMenuMetrics.width, height: layout.height)
         frame.size = size
         material.frame = bounds
@@ -433,9 +433,12 @@ final class SoundMenuContentView: NSView {
         groups = []
         var dividers = 0
         for row in layout.rows {
-            let first = subviews.count
+            // What this row made, by identity, not by place in the list: the block goes in BEHIND the rows already drawn, and the
+            // last view in the list was then the device row above it, which every glide moved as the block (drawn over its own
+            // "Listening Mode" heading, the size of the block).
+            let had = Set(subviews.map(ObjectIdentifier.init))
             add(row, model)
-            let made = Array(subviews[first...])
+            let made = subviews.filter { !had.contains(ObjectIdentifier($0)) }
             var key = Self.key(of: row.kind, model: model)
             if row.kind == .divider { key += "#\(dividers)"; dividers += 1 }
             groups.append(RowGroup(key: key, views: made, finalFrames: made.map(\.frame), finalRow: row.frame, fromRow: before[key]))
@@ -478,6 +481,7 @@ final class SoundMenuContentView: NSView {
         case .block: return "block"
         case .footer(let i): return "footer:" + (model.footerTitles.indices.contains(i) ? model.footerTitles[i] : "\(i)")
         case .notice: return "notice"
+        case .adaptiveSlider: return "adaptiveSlider"
         }
     }
 
@@ -584,6 +588,10 @@ final class SoundMenuContentView: NSView {
             addSubview(v)
         case .notice:
             addSubview(label(model.notice ?? "", f, size: 12, weight: .regular, color: .systemOrange, wraps: true))
+        case .adaptiveSlider:
+            let slider = AdaptiveSliderRow(frame: f, level: model.adaptiveLevel ?? 0.5)
+            slider.onPick = { [weak self] in self?.controller?.openAdaptiveInMacOS() }
+            addSubview(slider)
         case .footer(let i):
             let titles = model.footerTitles
             guard titles.indices.contains(i) else { return }
@@ -598,6 +606,18 @@ final class SoundMenuContentView: NSView {
         case AppleSoundPanel.spatialHeading: return model.spatial
         default: return model.conversation
         }
+    }
+
+    /// How many lines (1 or 2) `text` takes as the notice draws it: a label like the one `add` makes for it, asked how tall it is
+    /// at the notice's width.
+    static func noticeLines(_ text: String) -> Int {
+        let l = NSTextField(labelWithString: text)
+        l.font = .systemFont(ofSize: 12, weight: .regular)
+        l.lineBreakMode = .byWordWrapping
+        l.maximumNumberOfLines = 2
+        let width = SoundMenuMetrics.width - 2 * SoundMenuMetrics.sideInset
+        let height = l.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: width, height: .greatestFiniteMagnitude)).height ?? 0
+        return height > 1.5 * SoundMenuMetrics.noticeLineHeight ? 2 : 1
     }
 
     private func label(_ text: String, _ frame: CGRect, size: CGFloat, weight: NSFont.Weight, color: NSColor, wraps: Bool = false) -> NSTextField {
@@ -754,6 +774,71 @@ final class DeviceRow: HoverRow {
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
+}
+
+/// Adaptive Audio's slider, drawn where macOS's own menu has it, its knob at macOS's level. macOS's slider can be read (where its knob
+/// is drawn) but not set from outside (measured: no Accessibility value or action, and events sent to Control Center do not move it),
+/// so a click here opens macOS's own Sound menu, where it is dragged.
+final class AdaptiveSliderRow: HoverRow {
+
+    private typealias M = SoundMenuMetrics
+    var level: Double { didSet { needsDisplay = true; knob.frame = knobFrame } }
+    private let knob = NSImageView()
+
+    init(frame: NSRect, level: Double) {
+        self.level = min(1, max(0, level))
+        super.init(frame: frame)
+        hoverAlpha = 0   // a slider is not a row that lights up
+        spokenTitle = "Adaptive Audio level"
+        knob.image = ListeningGlyphs.image(for: "Adaptive") ?? symbol(SoundGlyphs.choice("Adaptive"), size: 12)
+        knob.imageScaling = .scaleProportionallyDown
+        knob.wantsLayer = true
+        knob.layer?.cornerRadius = M.adaptiveSliderKnobSize.height / 2
+        knob.layer?.backgroundColor = NSColor.white.cgColor   // macOS's knob: a white pill, its glyph black, in either appearance
+        knob.contentTintColor = .black
+        addSubview(knob)
+        knob.frame = knobFrame
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Where the knob is drawn: its middle between the end icons' inner edges, `level` of the way.
+    var knobFrame: CGRect {
+        let start = M.adaptiveSliderLeftIconX + M.adaptiveSliderIconSize, end = M.adaptiveSliderRightIconX
+        let x = start + CGFloat(min(1, max(0, level))) * (end - start)
+        let s = M.adaptiveSliderKnobSize
+        return CGRect(x: x - s.width / 2, y: (bounds.height - s.height) / 2, width: s.width, height: s.height)
+    }
+
+    /// macOS's capsule, which the end icons and the knob sit in: as tall as the knob, in the middle of the row.
+    var trackFrame: CGRect {
+        let h = M.adaptiveSliderKnobSize.height
+        return CGRect(x: M.adaptiveSliderTrackX, y: (bounds.height - h) / 2, width: M.adaptiveSliderTrackWidth, height: h)
+    }
+
+    override func accessibilityValue() -> Any? { "\(Int((min(1, max(0, level)) * 100).rounded()))%" }
+
+    /// Every press on the slider is the slider's, the knob's too: the knob is a picture over the row, and a press on it went to the
+    /// picture, which kept it (the slider did nothing when its knob was pressed or dragged).
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let local = superview.map { convert(point, from: $0) } ?? point
+        return bounds.contains(local) ? self : nil
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        let track = trackFrame, icon = M.adaptiveSliderIconSize
+        // The capsule: a little lighter than the block it is on (dark), a little darker (light).
+        SoundText.ink(dark: 0.10, light: 0.06).setFill()
+        NSBezierPath(roundedRect: track, xRadius: track.height / 2, yRadius: track.height / 2).fill()
+        // The end icons, inside it: less of the world on the left, all of it on the right, as macOS's.
+        for (name, x) in [("circle.dotted", M.adaptiveSliderLeftIconX), ("circle", M.adaptiveSliderRightIconX)] {
+            guard let image = symbol(name, size: icon, weight: .medium) else { continue }
+            let tinted = image.copy() as! NSImage
+            tinted.lockFocus(); SoundText.ink(dark: 0.9, light: 0.75).set(); NSRect(origin: .zero, size: tinted.size).fill(using: .sourceAtop); tinted.unlockFocus()
+            tinted.draw(in: NSRect(x: x, y: track.midY - icon / 2, width: icon, height: icon))
+        }
+    }
 }
 
 final class ChoiceRow: HoverRow {

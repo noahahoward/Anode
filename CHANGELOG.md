@@ -7,6 +7,12 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.26.0 — 2026-11-18
+- Sound menu: with AirPods in Adaptive, the Adaptive Audio slider shows under it, where macOS's own menu has it and at macOS's level. Clicking it opens macOS's own Sound menu, where the slider is dragged (macOS does not let another app move it).
+- Sound menu: Adaptive is always asked of macOS. Anode used to refuse it by itself when it guessed one AirPod was out, and it guessed wrong with both in. When macOS refuses, its reason is shown and the check stays on the mode the AirPods are really in.
+- Sound menu: the AirPods row no longer slides over "Listening Mode" when a note appears under the rows, and a one-line note no longer leaves an empty line under it.
+- Per-app volume: setting an app back to 100 % gives it its own sound back sooner, so the break in its audio is shorter. Nothing of Anode's stays on an app at 100 %, so macOS shows no recording indicator for it.
+
 ## 1.25.5 — 2026-11-18
 - With the readings list open (the menu bar widget that lists every reading), one click on another reading now closes the list and opens Anode's window on that reading. Before, that click only closed the list and a second click was needed.
 

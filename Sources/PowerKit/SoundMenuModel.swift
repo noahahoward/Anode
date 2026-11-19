@@ -64,6 +64,10 @@ public struct SoundMenuModel: Equatable {
     public var apps: [AppVolumeRow] = []
     /// Anode's: the small gear that opens Beta Features, at the right end of the title line.
     public var showsGear = false
+    /// Adaptive Audio's level (0 to 1) while Adaptive is the listening mode of the open device, as macOS's own menu shows it.
+    public var adaptiveLevel: Double?
+    /// The listening row it goes under (see `AppleSoundPanel.adaptiveRow`).
+    public var adaptiveRow: String?
 
     public init(volume: Double, muted: Bool, devices: [Device], expandedDevice: String?, listening: [AppleChoiceRow],
                 spatial: [AppleChoiceRow], conversation: [AppleChoiceRow], appleAvailable: Bool, notice: String? = nil) {
@@ -108,9 +112,13 @@ public struct SoundMenuModel: Equatable {
         }
         let open = expanded ?? apple?.expandedDevice
         let show = open != nil && devices.contains { $0.name == open }
-        return SoundMenuModel(volume: volume, muted: muted, devices: devices, expandedDevice: show ? open : nil,
-                              listening: show ? apple?.listening ?? [] : [], spatial: show ? apple?.spatial ?? [] : [],
-                              conversation: show ? apple?.conversation ?? [] : [], appleAvailable: apple != nil)
+        var model = SoundMenuModel(volume: volume, muted: muted, devices: devices, expandedDevice: show ? open : nil,
+                                   listening: show ? apple?.listening ?? [] : [], spatial: show ? apple?.spatial ?? [] : [],
+                                   conversation: show ? apple?.conversation ?? [] : [], appleAvailable: apple != nil)
+        // Only for the device macOS's panel has open (the level is that device's), not for one opened here instead.
+        model.adaptiveLevel = show && open == apple?.expandedDevice ? apple?.adaptiveLevel : nil
+        model.adaptiveRow = model.adaptiveLevel == nil ? nil : apple?.adaptiveRow
+        return model
     }
 }
 

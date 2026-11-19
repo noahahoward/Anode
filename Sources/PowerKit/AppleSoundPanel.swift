@@ -39,6 +39,10 @@ public struct AppleSoundPanel: Equatable, Codable {
     public var expandedDevice: String?
     /// The buttons at the bottom ("<device> Settings…", "Sound Settings…").
     public var settingsButtons: [String] = []
+    /// Adaptive Audio's level, 0 to 1, while Adaptive is the listening mode: where macOS draws the knob of its slider. Nil without it.
+    public var adaptiveLevel: Double?
+    /// The listening row macOS draws that slider under (Adaptive), as it is titled in the panel: told by place, not by name.
+    public var adaptiveRow: String?
 
     public static let volumeSliderID = "controlcenter-volume-slider"
     public static let devicePrefix = "sound-device-"
@@ -51,8 +55,16 @@ public struct AppleSoundPanel: Equatable, Codable {
     public static func parse(_ root: AXNode) -> AppleSoundPanel {
         var panel = AppleSoundPanel()
         var section = ""
+        var sliderPictures: [CGRect] = []
+        var sliderRow: String?
         for node in root.flattened {
             switch node.role {
+            case "AXImage" where node.identifier.hasPrefix(devicePrefix) && section == listeningHeading
+                && String(node.identifier.dropFirst(devicePrefix.count)) == panel.expandedDevice:
+                // Adaptive Audio's slider: macOS offers it only as pictures (an end icon each side, the knob between them). Told
+                // apart by where they are, not by their names, which may be translated.
+                if sliderPictures.isEmpty { sliderRow = panel.listening.last?.title }
+                sliderPictures.append(node.frame)
             case "AXHeading":
                 section = node.description
             case "AXSlider" where node.identifier == volumeSliderID:
@@ -85,7 +97,23 @@ public struct AppleSoundPanel: Equatable, Codable {
             default: break
             }
         }
+        panel.adaptiveLevel = adaptiveLevel(pictures: sliderPictures)
+        panel.adaptiveRow = panel.adaptiveLevel == nil ? nil : sliderRow
+        if panel.adaptiveRow == nil { panel.adaptiveLevel = nil }   // a slider under no row is not one
         return panel
+    }
+
+    /// The level the knob is drawn at: three pictures exactly, the knob the biggest (40 x 24 against the end icons' 11 pt), measured
+    /// between the inner edges of the two end icons and held to 0...1. Anything else is not the slider, and gives nil.
+    static func adaptiveLevel(pictures: [CGRect]) -> Double? {
+        guard pictures.count == 3, let k = pictures.indices.max(by: { pictures[$0].width * pictures[$0].height < pictures[$1].width * pictures[$1].height })
+        else { return nil }
+        let knob = pictures[k]
+        let ends = pictures.indices.filter { $0 != k }.map { pictures[$0] }.sorted { $0.midX < $1.midX }
+        let left = ends[0], right = ends[1]
+        let span = right.minX - left.maxX
+        guard span > 0 else { return nil }
+        return Double(min(1, max(0, (knob.midX - left.maxX) / span)))
     }
 }
 

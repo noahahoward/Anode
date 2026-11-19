@@ -231,6 +231,18 @@ final class AppAudioRouterTests: XCTestCase {
         XCTAssertEqual(router.activeSessionCount, 0)
     }
 
+    func testBackToTheDefaultEndsTheSessionEvenWhileTheAppPlays() throws {
+        // A tap is audio capture: macOS shows its recording indicator for Anode as long as one exists. Keeping the tap at full volume
+        // while the app played (so going back to 100 % made no gap in the music) was tried and refused by the owner: the moment the tap
+        // takes to go is better than that indicator for an app Anode is not changing.
+        let (router, backend, _, _, done) = try rig(); defer { done() }
+        XCTAssertTrue(player.isRunningOutput, "the app is playing")
+        router.setVolume(0.5, forBundleID: "com.example.player")
+        router.setVolume(1, forBundleID: "com.example.player")
+        XCTAssertTrue(backend.sessions[0].stopped)
+        XCTAssertEqual(router.activeSessionCount, 0, "no tap, so no recording indicator")
+    }
+
     func testAMutedAppThatIsNotRunningIsStillTappedSoItsFirstSoundIsSilent() throws {
         let (router, backend, _, _, done) = try rig(running: []); defer { done() }
         router.setMuted(true, forBundleID: "com.example.player")

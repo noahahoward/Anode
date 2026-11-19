@@ -226,8 +226,14 @@ final class CoreAudioSession: AppAudioSessionHandle {
 
     func stop() {
         guard !stopped else { return }
-        stopped = true
+        stopped = true   // (first: the device may report itself dead on the way down, which is not a failure)
         defer { if let ownUID { OwnAudioDevices.remove(uid: ownUID) } }
+        // The tap first: it holds the app silent, and taking Anode's device down first (a round trip to the audio daemon for each
+        // step) left the app playing unheard meanwhile: half a second to a second of its music skipped when it went back to 100 %.
+        if tap != kAudioObjectUnknown {
+            if #available(macOS 14.2, *) { AudioHardwareDestroyProcessTap(tap) }
+            tap = AudioObjectID(kAudioObjectUnknown)
+        }
         if aggregate != kAudioObjectUnknown {
             if let block = aliveBlock {
                 var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsAlive, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
@@ -237,10 +243,6 @@ final class CoreAudioSession: AppAudioSessionHandle {
             if let ioProc { AudioDeviceDestroyIOProcID(aggregate, ioProc) }
             AudioHardwareDestroyAggregateDevice(aggregate)
             aggregate = AudioObjectID(kAudioObjectUnknown)
-        }
-        if tap != kAudioObjectUnknown {
-            if #available(macOS 14.2, *) { AudioHardwareDestroyProcessTap(tap) }
-            tap = AudioObjectID(kAudioObjectUnknown)
         }
     }
 }

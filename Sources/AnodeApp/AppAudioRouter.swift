@@ -120,6 +120,9 @@ final class AppAudioRouter: AppVolumeControlling {
             if let app = running[id] { wanted[id] = (app.processObjectIDs, setting) }
             else if backend.canTapAppsNotYetRunning, LooseApp.executablePath(from: id) == nil { wanted[id] = ([], setting) }   // held from its first sound
         }
+        // Back at 100 % and unmuted: the tap goes at once, playing or not. A tap is audio capture, and macOS shows its recording
+        // indicator for Anode for as long as one exists; the owner would rather hear the moment the tap takes to go than see that
+        // indicator for an app Anode is not changing. (`CoreAudioSession.stop` gives the app its sound back first, to keep that short.)
         for id in sessions.keys where wanted[id] == nil { sessions[id]?.handle.stop(); sessions[id] = nil }
         for (id, want) in wanted {
             // Process ids matter only to a backend that cannot tap an app by name.

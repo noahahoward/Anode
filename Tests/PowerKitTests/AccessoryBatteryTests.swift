@@ -28,13 +28,6 @@ final class AccessoryBatteryTests: XCTestCase {
         XCTAssertFalse(AccessoryBattery.parse(sources).contains { $0.percent == 50 })
     }
 
-    func testBothBudsPresent() {
-        let b = AccessoryBattery.parse(sources)
-        XCTAssertTrue(AccessoryBattery.bothBudsPresent(in: b, group: "G1"))
-        XCTAssertFalse(AccessoryBattery.bothBudsPresent(in: b, group: "G2"))
-        XCTAssertFalse(AccessoryBattery.bothBudsPresent(in: AccessoryBattery.parse([source("Right", 64), source("Case", 77)]), group: "G1"))
-    }
-
     func testSingleEarbudHasOnePart() {
         let b = AccessoryBattery.parse([source("Main", 80, group: "G9")])
         XCTAssertEqual(b.map(\.part), [.single])

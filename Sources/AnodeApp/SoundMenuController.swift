@@ -61,7 +61,6 @@ final class SoundMenuController {
 
 
     static let needsAccessibility = "Needs Accessibility for the listening mode, Conversation Awareness and AirPlay rows."
-    static let adaptiveNeedsBothBuds = "Put both AirPods in to use Adaptive."
 
     private let settings: Settings
     private let outputs: AudioOutputs
@@ -220,6 +219,7 @@ final class SoundMenuController {
         onWillOpen?()
         driver.closePanelOpenedByPerson()
         notice = nil
+        refused = nil
         collapsed.removeAll()
         openCount += 1
         presenter.show(model, below: anchor)
@@ -235,7 +235,28 @@ final class SoundMenuController {
 
     func closeMenu(fade: Bool = true) {
         generation += 1
+        refused = nil
         presenter.close(fade: fade)
+    }
+
+    /// The choice macOS refused in this opening of the menu. macOS's panel, read again just after a refusal, can still show the
+    /// choice it refused (seen: Adaptive with one AirPod out showed as checked while Transparency was the mode); such a reading is
+    /// not taken for that section. A new choice, or a new opening, forgets it: from then on what macOS shows is shown.
+    private var refused: AppleChoiceRow?
+
+    /// `read` with the refused choice's section as it was (`kept`) when `read` shows that choice on. Pure.
+    static func notShowingRefused(_ refused: AppleChoiceRow?, read: AppleSoundPanel, kept: AppleSoundPanel?) -> AppleSoundPanel {
+        guard let refused, let kept else { return read }
+        var out = read
+        switch refused.section {
+        case AppleSoundPanel.listeningHeading:
+            if read.listening.contains(where: { $0.title == refused.title && $0.isOn }) { out.listening = kept.listening }
+        case AppleSoundPanel.spatialHeading:
+            if read.spatial.contains(where: { $0.title == refused.title && $0.isOn }) { out.spatial = kept.spatial }
+        default:
+            if read.conversation.contains(where: { $0.title == refused.title && $0.isOn }) { out.conversation = kept.conversation }
+        }
+        return out
     }
 
     /// Reads macOS's panel, when Accessibility allows. What came back replaces what was known; the model is redrawn.
@@ -255,7 +276,7 @@ final class SoundMenuController {
             // After teardown, or with a press still to be answered (this reading is from before it), the answer is not used.
             guard self.installed, self.pressesInFlight == 0 else { return }
             if case .tree(let tree) = outcome {
-                let parsed = AppleSoundPanel.parse(tree)
+                let parsed = Self.notShowingRefused(self.refused, read: AppleSoundPanel.parse(tree), kept: self.reading?.panel)
                 let names = Set(self.outputs.devices.map(\.name))
                 self.reading = parsed.devices.isEmpty ? nil
                     : AppleReading(panel: parsed, coreBacked: parsed.devices.map(\.name).filter { names.contains($0) })
@@ -349,16 +370,13 @@ final class SoundMenuController {
         }
     }
 
+    /// Every choice is asked of macOS, Adaptive too: whether it can be had (both AirPods in the ears) is macOS's to say, and its
+    /// refusal is shown with its reason. Anode's own guess, from the battery list, was wrong both ways: that list cannot tell an ear
+    /// from the case, and comes and goes.
     func pickChoice(_ row: AppleChoiceRow) {
         guard row.enabled, !row.isOn else { return }
         notice = nil
-        let mine = AccessoryBattery.selected(forDeviceNamed: row.device, in: batteries())
-        if row.title == "Adaptive", let group = mine.first?.group,
-           !AccessoryBattery.bothBudsPresent(in: mine, group: group) {
-            notice = Self.adaptiveNeedsBothBuds
-            redraw()
-            return
-        }
+        refused = nil
         press(SystemPanelRow(identifier: AppleSoundPanel.devicePrefix + row.device, description: row.title, section: row.section), optimistic: row)
     }
 
@@ -377,6 +395,8 @@ final class SoundMenuController {
             }
             a.panel.listening = moved(a.panel.listening); a.panel.spatial = moved(a.panel.spatial)
             a.panel.conversation = moved(a.panel.conversation)
+            // Adaptive Audio's slider belongs to Adaptive: another mode takes it away with the check. (macOS's answer brings it back.)
+            if choice.section == AppleSoundPanel.listeningHeading { a.panel.adaptiveLevel = nil }
             reading = a
         }
         redraw()
@@ -390,6 +410,7 @@ final class SoundMenuController {
             case .pressed, .tree: break
             case .refused(let text):
                 self.reading = before
+                self.refused = choice
                 self.notice = text.components(separatedBy: " / ").last ?? text
             case .failed:
                 self.reading = before
@@ -399,6 +420,14 @@ final class SoundMenuController {
             // How it ended is read from macOS's panel, not assumed: a change that did not hold shows as it is.
             if self.presenter.isOpen { self.readApple() }
         }
+    }
+
+    /// Adaptive Audio's slider: macOS's can be read but not set from outside, so Anode's menu goes and macOS's own Sound menu opens,
+    /// where it is dragged.
+    func openAdaptiveInMacOS() {
+        closeMenu(fade: false)
+        driver.cancelAll()
+        driver.showPanelToPerson(.sound)
     }
 
     /// The gear: the menu goes, and Beta Features opens.

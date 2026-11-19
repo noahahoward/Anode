@@ -30,8 +30,10 @@ final class SoundMenuControllerTests: XCTestCase {
         var completions: [(SystemPanelOutcome) -> Void] = []
         var cancelled = false
         var closedPanelsOfThePerson = 0
+        var shownToPerson: [SystemPanelKind] = []
         func cancelAll() { cancelled = true }
         func closePanelOpenedByPerson() { closedPanelsOfThePerson += 1 }
+        func showPanelToPerson(_ kind: SystemPanelKind) { shownToPerson.append(kind) }
         func run(_ kind: SystemPanelKind, job: SystemPanelPress.Job, done: @escaping (SystemPanelOutcome) -> Void) {
             jobs.append((kind, job)); completions.append(done)
         }
@@ -99,7 +101,7 @@ final class SoundMenuControllerTests: XCTestCase {
             ["Type": "Accessory Source", "Part Identifier": "Right", "Group Identifier": "G", "Current Capacity": 66]])
     }
 
-    private func tree(listening: String = "Transparency", buttons: Bool = false) -> AXNode {
+    private func tree(listening: String = "Transparency", buttons: Bool = false, adaptiveKnobX: CGFloat? = nil) -> AXNode {
         func box(_ id: String, _ desc: String, _ on: Bool) -> AXNode {
             AXNode(role: "AXCheckBox", subrole: "AXToggle", identifier: id, description: desc, value: on ? "1" : "0")
         }
@@ -113,6 +115,11 @@ final class SoundMenuControllerTests: XCTestCase {
                 box(pods, "Test AirPods Pro, 100%, 66%", true),
                 AXNode(role: "AXHeading", identifier: pods, description: "Listening Mode"),
                 box(pods, "Transparency", listening == "Transparency"), box(pods, "Adaptive", listening == "Adaptive"),
+            ] + (adaptiveKnobX.map { x in [   // Adaptive Audio's slider, as macOS offers it: pictures only (measured)
+                AXNode(role: "AXImage", identifier: pods, description: "Dotted Circle", frame: CGRect(x: 1328, y: 293, width: 11, height: 11)),
+                AXNode(role: "AXImage", identifier: pods, description: "Person And Sparkles, Filled", frame: CGRect(x: x - 20, y: 286.5, width: 40, height: 24)),
+                AXNode(role: "AXImage", identifier: pods, description: "Circle", frame: CGRect(x: 1531, y: 293, width: 11, height: 11)),
+            ] } ?? []) + [
                 box(pods, "Noise Cancellation", listening == "Noise Cancellation"),
                 AXNode(role: "AXHeading", identifier: pods, description: "Conversation Awareness"),
                 box(pods, "Off", true), box(pods, "On", false),
@@ -363,21 +370,61 @@ final class SoundMenuControllerTests: XCTestCase {
         XCTAssertEqual(r.model.notice, "Put Test AirPods Pro in both ears to use Adaptive Audio.")
     }
 
-    func testAdaptiveNotPressedWhenTheBudsAreNotBothThere() throws {
+    // Seen: one AirPod out, Adaptive refused by macOS (its reason shown), and Anode's menu then showed Adaptive checked while Transparency
+    // was the mode: macOS's panel, read again just after the refusal, can still show the choice it refused.
+    func testAReadingJustAfterARefusalDoesNotPutTheRefusedChoiceBack() throws {
+        let r = try rig(); defer { r.cleanup() }
+        openAndRead(r)                                   // job 0: the read (Transparency)
+        r.controller.pickChoice(r.model.listening[1])    // job 1: the press of Adaptive
+        r.driver.complete(1, .refused("Failed to set listening mode / Put Test AirPods Pro in both ears to use Adaptive Audio."))
+        XCTAssertEqual(r.driver.jobs.count, 3, "macOS's panel is read again")
+        r.driver.complete(2, .tree(tree(listening: "Adaptive")))
+        XCTAssertEqual(r.model.listening.map(\.isOn), [true, false, false], "Transparency, which is what the AirPods are in")
+        XCTAssertNotNil(r.model.notice, "and the reason stays")
+    }
+
+    func testAfterARefusalAnotherChoiceIsShownAsMacOSTellsIt() throws {
+        let r = try rig(); defer { r.cleanup() }
+        openAndRead(r)
+        r.controller.pickChoice(r.model.listening[1])
+        r.driver.complete(1, .refused("Failed to set listening mode / Put Test AirPods Pro in both ears to use Adaptive Audio."))
+        r.driver.complete(2, .tree(tree(listening: "Transparency")))
+        r.controller.pickChoice(r.model.listening[2])    // job 3: Noise Cancellation, which macOS takes
+        r.driver.complete(3, .pressed)
+        r.driver.complete(4, .tree(tree(listening: "Noise Cancellation")))
+        XCTAssertEqual(r.model.listening.map(\.isOn), [false, false, true])
+    }
+
+    func testTheNextOpeningShowsWhatMacOSSays() throws {
+        let r = try rig(); defer { r.cleanup() }
+        openAndRead(r)
+        r.controller.pickChoice(r.model.listening[1])
+        r.driver.complete(1, .refused("Failed to set listening mode / Put Test AirPods Pro in both ears to use Adaptive Audio."))
+        r.driver.complete(2, .tree(tree(listening: "Transparency")))
+        r.controller.closeMenu()
+        r.controller.openMenu()                          // job 3: a new reading, nothing refused in this opening
+        r.driver.complete(3, .tree(tree(listening: "Adaptive")))
+        XCTAssertEqual(r.model.listening.map(\.isOn), [false, true, false])
+    }
+
+    func testAdaptiveIsAskedOfMacOSWhateverTheBatteryListSays() throws {
+        // The battery list cannot say whether a bud is in an ear (a bud in the case is listed; the list comes and goes): it showed
+        // both buds with one out of an ear, and one bud with both in, so Anode refused what macOS would have done. macOS decides,
+        // and its refusal says why (`testRefusalPutsCheckBackAndShowsLine`).
         let one = AccessoryBattery.parse([["Type": "Accessory Source", "Part Identifier": "Right", "Group Identifier": "G", "Current Capacity": 66]])
         let r = try rig(batteries: one); defer { r.cleanup() }
         openAndRead(r)
         r.controller.pickChoice(r.model.listening[1])
-        XCTAssertEqual(r.driver.jobs.count, 1)   // the read only
-        XCTAssertEqual(r.model.listening.map(\.isOn), [true, false, false])
-        XCTAssertEqual(r.model.notice, "Put both AirPods in to use Adaptive.")
+        XCTAssertEqual(r.driver.jobs.count, 2, "the read, then the press")
+        XCTAssertEqual(r.model.listening.map(\.isOn), [false, true, false], "the check moves at once, as for any choice")
+        XCTAssertNil(r.model.notice)
     }
 
     func testANoticeAboutTheAirPodsIsGoneOnceTheOutputsChange() throws {
-        let one = AccessoryBattery.parse([["Type": "Accessory Source", "Part Identifier": "Right", "Group Identifier": "G", "Current Capacity": 66]])
-        let r = try rig(batteries: one); defer { r.cleanup() }
+        let r = try rig(); defer { r.cleanup() }
         openAndRead(r)
         r.controller.pickChoice(r.model.listening[1])
+        r.driver.complete(1, .refused("Failed to set listening mode / Put Test AirPods Pro in both ears to use Adaptive Audio."))
         XCTAssertNotNil(r.model.notice)
         // The AirPods are taken out: what it said about them no longer applies.
         r.outputs.devices.removeAll { $0.id == "pods" }
@@ -584,5 +631,25 @@ final class SoundMenuControllerTests: XCTestCase {
         XCTAssertFalse(r.presenter.isOpen)
         XCTAssertFalse(r.outputs.started)
         XCTAssertTrue(r.driver.cancelled)   // macOS's own panel is closed and nothing is left running
+    }
+
+    // ── Adaptive Audio's slider ─────────────────────────────────────────────
+
+    func testAClickOnTheAdaptiveSliderClosesAnodesMenuAndOpensMacOSsOwn() throws {
+        let r = try rig(); defer { r.cleanup() }
+        r.controller.openMenu()
+        r.driver.complete(0, .tree(tree(listening: "Adaptive", adaptiveKnobX: 1435)))
+        XCTAssertEqual(r.model.adaptiveLevel ?? -1, 0.5, accuracy: 0.001)
+        r.controller.openAdaptiveInMacOS()
+        XCTAssertFalse(r.presenter.isOpen, "Anode's menu closes")
+        XCTAssertEqual(r.driver.shownToPerson, [.sound], "and macOS's own Sound menu opens, where the slider is dragged")
+    }
+
+    func testChoosingAnotherModeTakesTheAdaptiveSliderAwayAtOnce() throws {
+        let r = try rig(); defer { r.cleanup() }
+        r.controller.openMenu()
+        r.driver.complete(0, .tree(tree(listening: "Adaptive", adaptiveKnobX: 1435)))
+        r.controller.pickChoice(r.model.listening[0])   // Transparency
+        XCTAssertNil(r.model.adaptiveLevel, "the slider belongs to Adaptive: it goes with the check, not when macOS answers")
     }
 }

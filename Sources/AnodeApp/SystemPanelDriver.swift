@@ -26,10 +26,14 @@ protocol SystemPanelDriving: AnyObject {
     /// A panel of macOS's own that the person opened (not one of Anode's reads) is closed, and so is the volume pill if it is up: macOS
     /// closes one menu bar menu for the next, and an Anode menu opening in place of a click macOS never saw has to do that part itself.
     func closePanelOpenedByPerson()
+    /// Opens macOS's own panel for the person, where it is and as it is (nothing covers it or moves it): for what only it can do,
+    /// such as dragging Adaptive Audio's slider.
+    func showPanelToPerson(_ kind: SystemPanelKind)
 }
 
 extension SystemPanelDriving {
     func closePanelOpenedByPerson() {}
+    func showPanelToPerson(_ kind: SystemPanelKind) {}
 }
 
 /// Whether a still picture of macOS's icon is over the icon now. A click on the icon then lands on that picture, and the click
@@ -241,6 +245,12 @@ final class SystemPanelDriver: SystemPanelDriving {
         }
         bannerWatch = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
+    }
+
+    func showPanelToPerson(_ kind: SystemPanelKind) {
+        guard let found = locate(kind) else { return }
+        log("opening macOS's own panel for the person")
+        AXUIElementPerformAction(found.item, kAXPressAction as CFString)
     }
 
     /// A menu a right click on one of the bar's icons opened (see `MenuBarContextMenu`): Escape is the only thing that closes it.

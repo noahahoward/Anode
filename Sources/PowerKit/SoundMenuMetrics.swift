@@ -30,6 +30,17 @@ public enum SoundMenuMetrics {
     public static let blockHeadingToRows: CGFloat = 17
     public static let choiceRowHeight: CGFloat = 26
     public static let choiceRowPitch: CGFloat = 24
+    /// Adaptive Audio's slider, under the Adaptive row (measured, macOS 27.3): it starts where that row ends, is 30 tall, and moves
+    /// the rows under it down by 32. Its end icons are 11 pt, at 59 and 262 from the row's left edge; the knob is 40 x 24.
+    public static let adaptiveSliderHeight: CGFloat = 30
+    public static let adaptiveSliderExtra: CGFloat = 32
+    public static let adaptiveSliderLeftIconX: CGFloat = 59
+    public static let adaptiveSliderRightIconX: CGFloat = 262
+    public static let adaptiveSliderIconSize: CGFloat = 11
+    public static let adaptiveSliderKnobSize = CGSize(width: 40, height: 24)
+    /// The capsule the end icons and the knob sit in (measured from a 2x capture of macOS's menu): from 43 into the row, 246 x 24.
+    public static let adaptiveSliderTrackX: CGFloat = 43
+    public static let adaptiveSliderTrackWidth: CGFloat = 246
     public static let blockTopPadding: CGFloat = 15  // block top to the first heading
     public static let dividerGapBelowRows: CGFloat = 4     // a section's last row to the divider under it
     public static let headingGapBelowDivider: CGFloat = 10
@@ -42,7 +53,9 @@ public enum SoundMenuMetrics {
     public static let bottomPadding: CGFloat = 5.5
     /// The one line Anode adds under the rows when something needs saying (not part of macOS's menu).
     public static let noticeGap: CGFloat = 4
-    public static let noticeHeight: CGFloat = 30
+    /// One line of it (12 pt text); it is given one line or two, as many as its text takes.
+    public static let noticeLineHeight: CGFloat = 15
+    public static let noticeHeight: CGFloat = 2 * noticeLineHeight
 
     // ── The "Apps" section (per-app volume; Anode's own, between the slider and Output) ──
     /// One app on one line, as tall as an output row: its icon (the name is its tooltip), a mute button, a slider, the percentage.

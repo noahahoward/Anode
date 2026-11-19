@@ -120,4 +120,60 @@ final class AppleSoundPanelTests: XCTestCase {
         XCTAssertNil(p.volume)
         XCTAssertTrue(p.devices.isEmpty && p.listening.isEmpty && p.spatial.isEmpty && p.conversation.isEmpty)
     }
+
+    // ── The Adaptive Audio slider ───────────────────────────────────────────
+    // Measured on macOS 27.3 with Adaptive on: between the Adaptive and Noise Cancellation rows macOS draws three pictures, and offers
+    // nothing else (no slider, no value, no action): an end icon each side ("Dotted Circle" left, "Circle" right, 11 pt) and the knob
+    // ("Person And Sparkles, Filled", 40 x 24) between them. Where the knob is drawn is the level. The names may be translated, so the
+    // pictures are told apart by where they are, not by what they are called.
+
+    private func image(_ device: String, _ desc: String, _ frame: CGRect) -> AXNode {
+        AXNode(role: "AXImage", identifier: "sound-device-\(device)", description: desc, frame: frame)
+    }
+
+    private func adaptiveTree(knobX: CGFloat?, extraImage: Bool = false, imagesOf owner: String = "Test AirPods Pro") -> AXNode {
+        let pods = "Test AirPods Pro"
+        var rows: [AXNode] = [
+            node("AXDisclosureTriangle", id: "sound-device-\(pods)", desc: "Go Down", value: "1"),
+            device(pods, desc: "\(pods), 100%", on: true),
+            heading("Listening Mode", device: pods),
+            choice(pods, "Transparency", on: knobX == nil), choice(pods, "Adaptive", on: knobX != nil),
+        ]
+        if let knobX {
+            rows += [image(owner, "Dotted Circle", CGRect(x: 1328, y: 293, width: 11, height: 11)),
+                     image(owner, "Person And Sparkles, Filled", CGRect(x: knobX - 20, y: 286.5, width: 40, height: 24)),
+                     image(owner, "Circle", CGRect(x: 1531, y: 293, width: 11, height: 11))]
+            if extraImage { rows.append(image(owner, "Something Else", CGRect(x: 1400, y: 293, width: 11, height: 11))) }
+        }
+        rows += [choice(pods, "Noise Cancellation", on: false), heading("Conversation Awareness", device: pods), choice(pods, "Off", on: true)]
+        return node("AXWindow", children: [node("AXScrollArea", children: rows)])
+    }
+
+    func testTheAdaptiveLevelIsWhereTheKnobIsDrawn() throws {
+        // As measured: the knob's middle at 1435, between the end icons' inner edges (1339 and 1531): half way.
+        XCTAssertEqual(try XCTUnwrap(AppleSoundPanel.parse(adaptiveTree(knobX: 1435)).adaptiveLevel), 0.5, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(AppleSoundPanel.parse(adaptiveTree(knobX: 1339)).adaptiveLevel), 0, accuracy: 0.001)
+        XCTAssertEqual(try XCTUnwrap(AppleSoundPanel.parse(adaptiveTree(knobX: 1531)).adaptiveLevel), 1, accuracy: 0.001)
+    }
+
+    func testALevelOutsideTheEndsIsHeldToThem() throws {
+        XCTAssertEqual(try XCTUnwrap(AppleSoundPanel.parse(adaptiveTree(knobX: 1300)).adaptiveLevel), 0, accuracy: 0.001)
+    }
+
+    func testWithoutAdaptiveThereIsNoLevel() {
+        XCTAssertNil(AppleSoundPanel.parse(adaptiveTree(knobX: nil)).adaptiveLevel)
+    }
+
+    func testPicturesThatAreNotTheThreeOfTheSliderGiveNoLevel() {
+        // Nothing here guesses: a fourth picture, or pictures of another device, and there is no slider.
+        XCTAssertNil(AppleSoundPanel.parse(adaptiveTree(knobX: 1435, extraImage: true)).adaptiveLevel)
+        XCTAssertNil(AppleSoundPanel.parse(adaptiveTree(knobX: 1435, imagesOf: "Other Pods")).adaptiveLevel)
+    }
+
+    func testTheRestOfThePanelIsReadAsBeforeWithTheSliderThere() {
+        let p = AppleSoundPanel.parse(adaptiveTree(knobX: 1435))
+        XCTAssertEqual(p.listening.map(\.title), ["Transparency", "Adaptive", "Noise Cancellation"])
+        XCTAssertEqual(p.listening.map(\.isOn), [false, true, false])
+        XCTAssertEqual(p.adaptiveRow, "Adaptive", "the row the slider is drawn under, by place")
+    }
 }

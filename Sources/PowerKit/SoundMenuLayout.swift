@@ -19,6 +19,8 @@ public enum SoundMenuLayout {
         case footer(Int)
         /// A line of Anode's own, only when there is something to say.
         case notice
+        /// Adaptive Audio's slider, under the listening mode that is on while the model has a level.
+        case adaptiveSlider
     }
 
     public struct LaidOutRow: Equatable {
@@ -31,7 +33,9 @@ public enum SoundMenuLayout {
         public var height: CGFloat
     }
 
-    public static func frames(for model: SoundMenuModel) -> Result {
+    /// `noticeLines` is how many lines the notice's text takes as it is drawn (1 or 2; the drawing side measures it): a short one is
+    /// not given an empty second line.
+    public static func frames(for model: SoundMenuModel, noticeLines: Int = 2) -> Result {
         typealias M = SoundMenuMetrics
         var rows: [LaidOutRow] = []
         func add(_ kind: RowKind, x: CGFloat, y: CGFloat, w: CGFloat, h: CGFloat) {
@@ -72,6 +76,13 @@ public enum SoundMenuLayout {
                 for c in choices.indices {
                     inner.append(LaidOutRow(kind: .choice(section: title, index: c),
                                             frame: CGRect(x: M.rowInset, y: ry, width: M.rowWidth, height: M.choiceRowHeight)))
+                    // The slider goes under its own row (Adaptive), right under it, and only while that row is the one on.
+                    if title == AppleSoundPanel.listeningHeading, choices[c].isOn, model.adaptiveLevel != nil,
+                       choices[c].title == model.adaptiveRow {
+                        inner.append(LaidOutRow(kind: .adaptiveSlider,
+                                                frame: CGRect(x: M.rowInset, y: ry + M.choiceRowHeight, width: M.rowWidth, height: M.adaptiveSliderHeight)))
+                        ry += M.adaptiveSliderExtra
+                    }
                     ry += M.choiceRowPitch
                 }
                 let lastBottom = ry - M.choiceRowPitch + M.choiceRowHeight
@@ -90,8 +101,9 @@ public enum SoundMenuLayout {
         }
 
         if model.notice != nil {
-            add(.notice, x: M.sideInset, y: y + M.noticeGap, w: M.width - 2 * M.sideInset, h: M.noticeHeight)
-            y += M.noticeGap + M.noticeHeight
+            let h = CGFloat(min(2, max(1, noticeLines))) * M.noticeLineHeight
+            add(.notice, x: M.sideInset, y: y + M.noticeGap, w: M.width - 2 * M.sideInset, h: h)
+            y += M.noticeGap + h
         }
         let dividerY = y + M.footerDividerGap
         add(.divider, x: M.footerDividerInset, y: dividerY, w: M.width - 2 * M.footerDividerInset, h: 1)
