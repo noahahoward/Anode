@@ -28,18 +28,24 @@ enum RealClipboard {
         }
     }
 
-    /// Every form of every item. The entry cap is `maxBytes`; reading goes on to three times that so that an entry a little
-    /// over it can still be kept in its essential forms, and gives up beyond (nil), so a huge copy is never held in memory.
-    /// The dynamic types the system makes for things with no type of their own are left out.
+    /// The forms an entry is kept in (`ClipboardTypes.essential`: text, links, files, pictures, rich text) of the first few items,
+    /// and no others: an app's own private formats are never read, and a copy of a thousand things is not held. The entry cap is
+    /// `maxBytes`; reading goes on to twice that so that an entry a little over it can still be kept in fewer forms, and gives up
+    /// beyond (nil). The one form being read when that happens has been read whole (the pasteboard cannot say how big a form is
+    /// before it is read), so the most this holds at once is the cap's double and the largest single form.
+    static let maxItems = 32
     static func read(maxBytes: Int) -> [ClipboardRepresentation]? {
         guard let items = NSPasteboard.general.pasteboardItems else { return nil }
         var out: [ClipboardRepresentation] = []
         var total = 0
-        for (index, item) in items.enumerated() {
-            for type in item.types where !type.rawValue.hasPrefix("dyn.") {
-                guard let data = item.data(forType: type) else { continue }
+        for (index, item) in items.prefix(maxItems).enumerated() {
+            // Words and links first, pictures last: a big picture is the only form that can be large.
+            let kept = item.types.filter { ClipboardTypes.essential.contains($0.rawValue) }
+            let wanted = kept.filter { !ClipboardTypes.images.contains($0.rawValue) } + kept.filter { ClipboardTypes.images.contains($0.rawValue) }
+            for type in wanted {
+                guard total <= maxBytes * 2, let data = item.data(forType: type) else { continue }
                 total += data.count
-                if total > maxBytes * 3 { return nil }
+                if total > maxBytes * 2 { return nil }
                 out.append(ClipboardRepresentation(item: index, type: type.rawValue, data: data))
             }
         }

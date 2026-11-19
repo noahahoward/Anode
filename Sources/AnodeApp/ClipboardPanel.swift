@@ -4,44 +4,76 @@ import PowerKit
 
 // ── Clipboard History: the panel ────────────────────────────────────────────
 //
-// A search bar over a list, in the middle of the upper part of the screen, in the system glass, as Spotlight looks. Type to
-// search, ↑ ↓ to move, ↩ to paste into the app that was in front.
+// Drawn as macOS 27's own ⌘Space panel is (measured on this Mac, 2026-11-19, from window captures of it, a screenshot of it over a
+// light and a dark backdrop, and its window's opacity read every few milliseconds): a bar and, under it with a gap, a separate card.
+// Both are liquid glass with a black tint over it. The bar's tint is black at the top and half that at the bottom; the card's is
+// about half and a fifth. The card's list has chips at the top (here the kinds in the history), then rows 62 points apart with a 36 point
+// icon, a 17 point title and a capsule for the selection.
 //
-// It must not take that app's place. The panel is a non-activating one, ordered front without Anode becoming the active app
-// (`orderFrontRegardless`, never `NSApp.activate`), so the app being pasted into stays in front. It becomes the KEY window, so
-// that typing reaches the search field (`canBecomeKey`); and a key window that is ordered out hands "key" on to another window
-// of Anode's, which would bring it forward over the app being pasted into, so the controller puts the app in front back
-// (`restoreFront`) every time the panel goes.
+// It must not take the front app's place. The panel is a non-activating one, ordered front without Anode becoming the active app
+// (`orderFrontRegardless`, never `NSApp.activate`), so the app being pasted into stays in front. It becomes the KEY window, so that
+// typing reaches the search field (`canBecomeKey`); and a key window that is ordered out hands "key" on to another window of
+// Anode's, which would bring it forward over the app being pasted into, so the controller puts the app in front back (`restoreFront`)
+// each time the panel goes.
 //
-// The keys are taken in `sendEvent`, before the field sees them, so ↑ ↓ ↩ and the ⌘ and ⌥ combinations are not the field's.
+// The keys are taken in `sendEvent`, before the field sees them, so ↑ ↓ ↩ Tab and the ⌘ and ⌥ combinations are not the field's.
 
-/// Every measure in one place. They are ESTIMATES of macOS's Spotlight panel (this Mac has none to measure): to be compared
-/// side by side with it and changed here.
+/// Every measure in one place, in points. The numbers that say "measured" are read from macOS 27.3's own panel.
 enum ClipboardPanelMetrics {
-    static let width: CGFloat = 680
-    static let searchHeight: CGFloat = 60
-    static let rowHeight: CGFloat = 48
-    static let maxVisibleRows = 8
-    static let listPadding: CGFloat = 6
-    static let footerHeight: CGFloat = 30
-    static let emptyHeight: CGFloat = 84
-    static let cornerRadius: CGFloat = 26
-    /// How far down from the top of the visible screen the panel's top edge is, as a fraction of its height.
-    static let topFraction: CGFloat = 0.2
-    static let searchFontSize: CGFloat = 22
-    static let iconSize: CGFloat = 28
-    static let sideInset: CGFloat = 22
-    static let rowInset: CGFloat = 8
-    static let selectionRadius: CGFloat = 10
-    /// How long the panel takes to fade in and out (estimates of Spotlight's, to be compared with it; none when Reduce Motion is on).
-    static let fadeInDuration: TimeInterval = 0.18
-    static let fadeOutDuration: TimeInterval = 0.12
-    /// Spotlight's look: black at the top, around the search bar, fading down into the glass of the list. How far down it
-    /// reaches, and how dark it is at the top in a dark and in a light appearance (a light one is only a hint of it, so the
-    /// search text stays readable).
-    static let fadeHeight: CGFloat = 170
-    static let fadeAlphaDark: CGFloat = 0.6
-    static let fadeAlphaLight: CGFloat = 0.2
+    // The panel
+    static let width: CGFloat = 520                  // measured
+    static let pillHeight: CGFloat = 87              // measured: the search bar
+    static let gap: CGFloat = 10                     // measured: between the bar and the card
+    static let cardMaxHeight: CGFloat = 410          // measured
+    static let pillRadius: CGFloat = 34              // the bar's corners are nearly, not quite, a capsule
+    static let cardRadius: CGFloat = 30
+    /// The bar's top edge sits this fraction of the visible screen's height down from its top (measured: 380 of 1169 points on a
+    /// screen whose menu bar is 39 points).
+    static let topFraction: CGFloat = 0.30
+
+    // The bar
+    static let searchFontSize: CGFloat = 21
+    static let searchLeft: CGFloat = 39              // measured
+    static let accessorySize: CGFloat = 33           // measured: the picture at the bar's right
+    static let accessoryCentreFromRight: CGFloat = 46.5
+    /// Black over the glass, at the bar's top and at its bottom, and the card's (measured over a light backdrop).
+    static let pillTint: (top: CGFloat, bottom: CGFloat) = (1.0, 0.54)
+    static let cardTint: (top: CGFloat, bottom: CGFloat) = (0.5, 0.2)
+
+    // The chips
+    static let chipsTop: CGFloat = 21                // measured, from the card's top
+    static let chipHeight: CGFloat = 25
+    static let chipLeft: CGFloat = 20
+    static let chipGap: CGFloat = 8.5
+    static let chipPadding: CGFloat = 10.5
+    static let chipFontSize: CGFloat = 14.5
+
+    // The rows
+    static let rowsTop: CGFloat = 61                 // from the card's top: after the chips
+    static let rowHeight: CGFloat = 62               // measured
+    static let rowInset: CGFloat = 14.5              // measured: the selection's distance from the card's sides
+    static let iconSize: CGFloat = 36
+    static let iconLeft: CGFloat = 26
+    static let titleLeft: CGFloat = 79.5
+    static let trailingRight: CGFloat = 26
+    static let titleFontSize: CGFloat = 17
+    static let detailFontSize: CGFloat = 12
+    static let selectionAlpha: CGFloat = 0.07
+    static let emptyCardHeight: CGFloat = 96
+    static let bottomPadding: CGFloat = 8
+
+    // Appearing and going: the panel's opacity, read every few milliseconds, rose in about 0.11 s and fell in about 0.11 s, evenly.
+    static let fadeInDuration: TimeInterval = 0.11
+    static let fadeOutDuration: TimeInterval = 0.11
+
+    /// The card's height for `rows` rows (nil: no card). Pure, for tests.
+    static func cardHeight(rows: Int, hasQuery: Bool) -> CGFloat? {
+        if rows > 0 { return min(cardMaxHeight, rowsTop + CGFloat(rows) * rowHeight + bottomPadding) }
+        return hasQuery ? emptyCardHeight : nil
+    }
+
+    /// The whole panel's height: the bar, and under it the card when there is one. Pure, for tests.
+    static func panelHeight(card: CGFloat?) -> CGFloat { pillHeight + (card.map { gap + $0 } ?? 0) }
 }
 
 /// What a row shows, worked out once when the list is built.
@@ -67,12 +99,13 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     private weak var controller: ClipboardHistoryController?
     private let content = ClipboardContentView()
     private var monitors: [Any] = []
+    private let editor = ClipboardFieldEditor()
     private(set) var shown = false
 
     var isOpen: Bool { shown }
 
     init() {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: ClipboardPanelMetrics.width, height: 200),
+        super.init(contentRect: NSRect(x: 0, y: 0, width: ClipboardPanelMetrics.width, height: ClipboardPanelMetrics.pillHeight),
                    styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         isOpaque = false
         backgroundColor = .clear
@@ -82,6 +115,8 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         animationBehavior = .none
         hidesOnDeactivate = false
         collectionBehavior = [.canJoinAllSpaces, .transient, .fullScreenAuxiliary, .ignoresCycle]
+        // Always the dark glass, as the system's own panel is: the black tint is part of how it looks.
+        appearance = NSAppearance(named: .darkAqua)
         delegate = self
         contentView = content
         setAccessibilityIdentifier("dev.anode.clipboardHistory")
@@ -92,6 +127,12 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
     /// Typing has to reach the search field.
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+
+    /// The search field is edited in a field editor that draws the system panel's caret: a thicker white bar with a glow.
+    override func fieldEditor(_ createFlag: Bool, for object: Any?) -> NSText? {
+        if let field = object as? NSTextField, field === content.field { return editor }
+        return super.fieldEditor(createFlag, for: object)
+    }
 
     // ── Showing ─────────────────────────────────────────────────────────────
 
@@ -110,7 +151,7 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         if animated {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = ClipboardPanelMetrics.fadeInDuration
-                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                context.timingFunction = CAMediaTimingFunction(name: .linear)
                 animator().alphaValue = 1
             }
         } else {
@@ -139,7 +180,7 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         }
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = ClipboardPanelMetrics.fadeOutDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            context.timingFunction = CAMediaTimingFunction(name: .linear)
             animator().alphaValue = 0
         }, completionHandler: { [weak self] in
             // Opened again while it faded: it stays, and the fade-in has taken over.
@@ -166,7 +207,7 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         return NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main ?? NSScreen.screens.first
     }
 
-    /// Horizontally centred on the screen, the top edge a fifth of the way down. Pure, for tests.
+    /// Horizontally centred on the screen, the top edge a third of the way down. Pure, for tests.
     static func frame(height: CGFloat, in visible: NSRect) -> NSRect {
         let top = visible.maxY - visible.height * ClipboardPanelMetrics.topFraction
         return NSRect(x: visible.midX - ClipboardPanelMetrics.width / 2, y: top - height, width: ClipboardPanelMetrics.width, height: height)
@@ -182,6 +223,7 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         guard abs(frame.height - height) > 0.5 else { return }
         let top = frame.maxY
         setFrame(NSRect(x: frame.minX, y: top - height, width: frame.width, height: height), display: true)
+        invalidateShadow()
     }
 
     // ── Keys ────────────────────────────────────────────────────────────────
@@ -198,6 +240,7 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         case chooseRow(Int)
         case delete
         case pin
+        case cycleFilter(Int)
         case escape
     }
 
@@ -208,6 +251,8 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         case 125 where mods.isEmpty: return .move(1)
         case 116 where mods.isEmpty: return .move(-5)
         case 121 where mods.isEmpty: return .move(5)
+        case 48 where mods.isEmpty: return .cycleFilter(1)
+        case 48 where mods == .shift: return .cycleFilter(-1)
         case 36, 76:
             if mods.isEmpty { return .choose(.paste) }
             if mods == .command { return .choose(.copyOnly) }
@@ -233,60 +278,118 @@ final class ClipboardPanel: NSPanel, ClipboardPresenting, NSWindowDelegate {
         case .chooseRow(let row): if let id = content.entry(atRow: row)?.id { controller?.choose(id, mode: .paste) }
         case .delete: if let id = content.selectedEntry?.id { controller?.delete(id) }
         case .pin: if let id = content.selectedEntry?.id { controller?.togglePin(id) }
+        case .cycleFilter(let by): content.cycleFilter(by)
         case .escape:
-            // The first Escape clears what was typed, the second closes: as Spotlight does.
-            if content.hasQuery { content.clearQuery() } else { controller?.dismiss() }
+            // The first Escape clears what was typed (or the chip), the second closes: as Spotlight does.
+            if content.hasQuery || content.filter != nil { content.clearQuery() } else { controller?.dismiss() }
         }
         return true
     }
 }
 
-// ── The black fade ──────────────────────────────────────────────────────────
+// ── The caret ───────────────────────────────────────────────────────────────
 
-/// Black at the top, clear at the bottom, clipped to the panel's rounded top corners. Drawn over the glass and under everything
-/// else; it takes no clicks.
-final class ClipboardFadeView: NSView {
-    private let gradient = CAGradientLayer()
+/// The field editor of the search field. The system panel's caret is a white bar about two and a half points wide, as tall as the
+/// line, with a glow round it; it blinks at the rate the system sets, which `NSTextView` follows.
+final class ClipboardFieldEditor: NSTextView {
 
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        wantsLayer = true
-        layer?.cornerRadius = ClipboardPanelMetrics.cornerRadius
-        layer?.cornerCurve = .continuous
-        layer?.maskedCorners = [.layerMinXMaxYCorner, .layerMaxXMaxYCorner]   // the top two, in a layer's own (y up) coordinates
-        layer?.masksToBounds = true
-        gradient.startPoint = CGPoint(x: 0.5, y: 1)
-        gradient.endPoint = CGPoint(x: 0.5, y: 0)
-        gradient.locations = [0, 0.5, 1]
-        layer?.addSublayer(gradient)
-        recolor()
+    static let caretWidth: CGFloat = 2.5
+    static let glowRadius: CGFloat = 6
+
+    init() {
+        super.init(frame: .zero, textContainer: nil)
+        isFieldEditor = true
+        isRichText = false
+        drawsBackground = false
+        insertionPointColor = .white
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
+        let margin = Self.glowRadius + 3
+        guard flag else {
+            // Off: the bar and its glow are drawn over by the text and the background again.
+            setNeedsDisplay(rect.insetBy(dx: -margin, dy: -margin / 2), avoidAdditionalLayout: true)
+            return
+        }
+        var bar = rect
+        bar.size.width = Self.caretWidth
+        NSGraphicsContext.saveGraphicsState()
+        let glow = NSShadow()
+        glow.shadowColor = NSColor(calibratedRed: 1, green: 0.96, blue: 0.82, alpha: 0.75)
+        glow.shadowBlurRadius = Self.glowRadius
+        glow.shadowOffset = .zero
+        glow.set()
+        NSColor.white.setFill()
+        NSBezierPath(roundedRect: bar, xRadius: Self.caretWidth / 2, yRadius: Self.caretWidth / 2).fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    override func setNeedsDisplay(_ rect: NSRect, avoidAdditionalLayout flag: Bool) {
+        // The glow reaches past the caret: what is drawn again has to as well.
+        super.setNeedsDisplay(rect.insetBy(dx: -(Self.glowRadius + 3), dy: -3), avoidAdditionalLayout: flag)
+    }
+}
+
+// ── The shapes ──────────────────────────────────────────────────────────────
+
+/// One of the two glass shapes: the glass, the black over it that fades from top to bottom, and a hairline round the edge. What it
+/// holds is added to `body`, which is flipped (its origin is its top-left).
+final class ClipboardShapeView: NSView {
+
+    enum Kind { case pill, card }
+
+    let kind: Kind
+    let body = FlippedView()
+    private let material: NSView
+    private let tint = CAGradientLayer()
+    private let edge = CALayer()
+
+    init(kind: Kind) {
+        self.kind = kind
+        let r = kind == .pill ? ClipboardPanelMetrics.pillRadius : ClipboardPanelMetrics.cardRadius
+        if #available(macOS 26.0, *) {
+            let glass = NSGlassEffectView()
+            glass.cornerRadius = r
+            material = glass
+        } else {
+            let v = NSVisualEffectView()
+            v.material = .hudWindow
+            v.blendingMode = .behindWindow
+            v.state = .active
+            material = v
+        }
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = r
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true       // nothing square shows at the corners, and the window's shadow follows this shape
+        addSubview(material)
+
+        let tints = kind == .pill ? ClipboardPanelMetrics.pillTint : ClipboardPanelMetrics.cardTint
+        tint.startPoint = CGPoint(x: 0.5, y: 1)      // the view is not flipped: y up, so 1 is the top
+        tint.endPoint = CGPoint(x: 0.5, y: 0)
+        tint.colors = [NSColor.black.withAlphaComponent(tints.top).cgColor, NSColor.black.withAlphaComponent(tints.bottom).cgColor]
+        layer?.addSublayer(tint)
+
+        addSubview(body)
+
+        edge.cornerRadius = r
+        edge.cornerCurve = .continuous
+        edge.borderWidth = 0.5
+        edge.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        layer?.addSublayer(edge)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
 
     override func layout() {
         super.layout()
-        gradient.frame = bounds
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        recolor()
-    }
-
-    /// The alpha at the top for an appearance. Pure, for tests.
-    static func topAlpha(dark: Bool) -> CGFloat {
-        dark ? ClipboardPanelMetrics.fadeAlphaDark : ClipboardPanelMetrics.fadeAlphaLight
-    }
-
-    private func recolor() {
-        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        let top = Self.topAlpha(dark: dark)
-        gradient.colors = [NSColor.black.withAlphaComponent(top).cgColor,
-                           NSColor.black.withAlphaComponent(top * 0.4).cgColor,
-                           NSColor.black.withAlphaComponent(0).cgColor]
+        material.frame = bounds
+        body.frame = bounds
+        tint.frame = bounds
+        edge.frame = bounds
     }
 }
 
@@ -297,94 +400,58 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
     weak var controller: ClipboardHistoryController?
     /// The height the panel should be, whenever the list changes it.
     var onResize: ((CGFloat) -> Void)?
+    /// The chip that is on, if any.
+    private(set) var filter: ClipboardFilter?
 
     typealias M = ClipboardPanelMetrics
 
-    /// The system glass on macOS 26 and later; before that, the menu material.
-    private let material: NSView = {
-        if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView()
-            glass.cornerRadius = M.cornerRadius
-            return glass
-        }
-        let v = NSVisualEffectView()
-        v.material = .hudWindow
-        v.blendingMode = .behindWindow
-        v.state = .active
-        v.wantsLayer = true
-        v.layer?.cornerRadius = M.cornerRadius
-        v.layer?.cornerCurve = .continuous
-        v.layer?.masksToBounds = true
-        return v
-    }()
-    /// The black that fades down from the top of the panel into the glass.
-    private let fade = ClipboardFadeView()
-    /// The hairline round the panel, and the plain fill that takes the glass's place under Reduce Transparency.
-    private let edge = EdgeView()
-    private let solid = SolidPanelView()
+    private let pill = ClipboardShapeView(kind: .pill)
+    private let card = ClipboardShapeView(kind: .card)
     let field = NSTextField()
-    private let searchIcon = NSImageView()
-    private let divider = NSBox()
+    private let accessory = NSImageView()
+    private let chips = FlippedView()
+    private var chipViews: [ClipboardChipView] = []
     private let scroll = NSScrollView()
     private let table = NSTableView()
     private let emptyLabel = NSTextField(labelWithString: "")
-    private let footer = NSTextField(labelWithString: "↩ Paste    ⌥↩ Plain text    ⌘↩ Copy    ⌘⌫ Delete    ⌘P Pin    esc Close")
     private var rows: [ClipboardRowModel] = []
+    private var cardHeight: CGFloat?
 
     private static let cellID = NSUserInterfaceItemIdentifier("clipboardRow")
 
     override var isFlipped: Bool { true }
 
     override init(frame: NSRect) {
-        super.init(frame: NSRect(x: 0, y: 0, width: M.width, height: 200))
+        super.init(frame: NSRect(x: 0, y: 0, width: M.width, height: M.pillHeight))
         build()
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
     private func build() {
-        // Clipped to the panel's rounded shape, as the Sound menu is: nothing square can show at the corners (it was a black box
-        // behind the glass), and the window's shadow follows this shape.
-        wantsLayer = true
-        layer?.cornerRadius = M.cornerRadius
-        layer?.cornerCurve = .continuous
-        layer?.masksToBounds = true
-        material.frame = bounds
-        material.autoresizingMask = [.width, .height]
-        addSubview(material)
-        solid.wantsLayer = true
-        solid.frame = bounds
-        solid.autoresizingMask = [.width, .height]
-        solid.isHidden = true
-        addSubview(solid)
-        addSubview(fade)
-        edge.wantsLayer = true
-        edge.layer?.cornerRadius = M.cornerRadius
-        edge.layer?.cornerCurve = .continuous
-        edge.layer?.borderWidth = 0.5
-        edge.frame = bounds
-        edge.autoresizingMask = [.width, .height]
-
-        searchIcon.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: nil)
-        searchIcon.contentTintColor = .secondaryLabelColor
-        searchIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: M.searchFontSize - 2, weight: .regular)
-        addSubview(searchIcon)
+        addSubview(pill)
+        addSubview(card)
 
         field.isBezeled = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: M.searchFontSize, weight: .light)
-        field.placeholderString = "Search Clipboard History"
+        field.font = .systemFont(ofSize: M.searchFontSize, weight: .regular)
+        field.textColor = NSColor(white: 0.96, alpha: 1)
+        field.placeholderAttributedString = NSAttributedString(
+            string: "Search Clipboard History",
+            attributes: [.font: NSFont.systemFont(ofSize: M.searchFontSize, weight: .regular), .foregroundColor: NSColor(white: 0.56, alpha: 1)])
         field.cell?.usesSingleLineMode = true
         field.cell?.isScrollable = true
         field.lineBreakMode = .byTruncatingTail
         field.delegate = self
         field.setAccessibilityLabel("Search Clipboard History")
-        addSubview(field)
+        pill.body.addSubview(field)
 
-        divider.boxType = .separator
-        addSubview(divider)
+        accessory.imageScaling = .scaleProportionallyUpOrDown
+        accessory.contentTintColor = NSColor(white: 0.6, alpha: 1)
+        pill.body.addSubview(accessory)
 
+        card.body.addSubview(chips)
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("entry"))
         column.resizingMask = .autoresizingMask
         table.addTableColumn(column)
@@ -396,11 +463,11 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
         table.allowsEmptySelection = false
         table.allowsMultipleSelection = false
         table.focusRingType = .none
+        table.style = .plain          // no inset of its own: the rows start where the list does
         table.dataSource = self
         table.delegate = self
         table.target = self
         table.action = #selector(rowClicked)
-        table.style = .plain          // no inset of its own: the rows start where the list does
         scroll.documentView = table
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentInsets = NSEdgeInsets()
@@ -408,30 +475,12 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.scrollerStyle = .overlay
-        addSubview(scroll)
+        card.body.addSubview(scroll)
 
-        emptyLabel.font = .systemFont(ofSize: 14)
-        emptyLabel.textColor = .secondaryLabelColor
+        emptyLabel.font = .systemFont(ofSize: 15)
+        emptyLabel.textColor = NSColor(white: 0.62, alpha: 1)
         emptyLabel.alignment = .center
-        addSubview(emptyLabel)
-
-        footer.font = .systemFont(ofSize: 11)
-        footer.textColor = .tertiaryLabelColor
-        footer.alignment = .center
-        footer.lineBreakMode = .byTruncatingTail
-        addSubview(footer)
-        addSubview(edge)   // last, over everything, and never takes a click
-        updateMaterial()
-    }
-
-    /// Glass, or a plain panel when Reduce Transparency is on; a stronger edge under Increase Contrast.
-    private func updateMaterial() {
-        let a = DisplayAccessibility.current
-        material.isHidden = a.glassIsSolid
-        fade.isHidden = a.glassIsSolid
-        solid.isHidden = !a.glassIsSolid
-        solid.needsDisplay = true
-        edge.layer?.borderColor = NSColor.white.withAlphaComponent(a.increaseContrast ? 0.35 : 0.05).cgColor
+        card.body.addSubview(emptyLabel)
     }
 
     // ── What is listed ──────────────────────────────────────────────────────
@@ -440,23 +489,28 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
     var selectedEntry: ClipboardEntry? { rows.indices.contains(table.selectedRow) ? rows[table.selectedRow].entry : nil }
     func entry(atRow row: Int) -> ClipboardEntry? { rows.indices.contains(row) ? rows[row].entry : nil }
 
-    /// A fresh start: nothing typed, the first row chosen.
+    /// A fresh start: nothing typed, no chip, the first row chosen.
     func reset() {
-        updateMaterial()
         field.stringValue = ""
+        filter = nil
         reload(keepingSelection: false)
     }
 
     func clearQuery() {
         field.stringValue = ""
+        filter = nil
         reload(keepingSelection: false)
     }
 
     func reload(keepingSelection: Bool) {
         let keep = keepingSelection ? selectedEntry?.id : nil
         let now = Date()
-        let found = controller?.results(for: field.stringValue) ?? []
+        let query = field.stringValue
+        let available = controller?.filters(for: query) ?? []
+        if let f = filter, !available.contains(f) { filter = nil }
+        let found = controller?.results(for: query, filter: filter) ?? []
         rows = found.enumerated().map { ClipboardRowModel.make($0.element, index: $0.offset, now: now) }
+        rebuildChips(available)
         table.reloadData()
         if !rows.isEmpty {
             let row = keep.flatMap { id in rows.firstIndex { $0.entry.id == id } } ?? 0
@@ -464,10 +518,16 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
             table.scrollRowToVisible(row)
         }
         updateSelectionLook()
-        emptyLabel.stringValue = hasQuery ? "No matches for \u{201C}\(field.stringValue)\u{201D}" : "Nothing copied yet"
+        let empty = (controller?.store.entries.isEmpty ?? true)
+        field.placeholderAttributedString = NSAttributedString(
+            string: empty ? "Nothing copied yet" : "Search Clipboard History",
+            attributes: [.font: NSFont.systemFont(ofSize: M.searchFontSize, weight: .regular), .foregroundColor: NSColor(white: 0.56, alpha: 1)])
+        emptyLabel.stringValue = "No matches for \u{201C}\(query)\u{201D}"
+        cardHeight = M.cardHeight(rows: rows.count, hasQuery: hasQuery || filter != nil)
+        updateAccessory()
         needsLayout = true
-        onResize?(height(forRows: rows.count))
-        layoutNow()
+        onResize?(M.panelHeight(card: cardHeight))
+        layoutSubtreeIfNeeded()
     }
 
     func moveSelection(_ by: Int) {
@@ -476,6 +536,16 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
         table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
         table.scrollRowToVisible(row)
         updateSelectionLook()
+        updateAccessory()
+    }
+
+    /// Tab: on to the next chip (and round to none), Shift-Tab back.
+    func cycleFilter(_ by: Int) {
+        let order: [ClipboardFilter?] = [nil] + (controller?.filters(for: field.stringValue) ?? []).map { Optional($0) }
+        guard order.count > 1 else { return }
+        let at = order.firstIndex { $0 == filter } ?? 0
+        filter = order[(at + by + order.count) % order.count]
+        reload(keepingSelection: false)
     }
 
     @objc private func rowClicked() {
@@ -485,35 +555,64 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
 
     func controlTextDidChange(_ obj: Notification) { reload(keepingSelection: false) }
 
-    // ── Layout ──────────────────────────────────────────────────────────────
-
-    private func height(forRows count: Int) -> CGFloat {
-        let list = count == 0 ? M.emptyHeight : CGFloat(min(count, M.maxVisibleRows)) * M.rowHeight + 2 * M.listPadding
-        return M.searchHeight + 1 + list + M.footerHeight
+    /// The picture at the bar's right: the chosen entry's own, or the clipboard.
+    private func updateAccessory() {
+        if let entry = selectedEntry, let image = ClipboardIcons.icon(for: entry, store: controller?.store) {
+            accessory.image = image
+            accessory.contentTintColor = nil
+        } else {
+            accessory.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: nil)
+            accessory.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 19, weight: .regular)
+            accessory.contentTintColor = NSColor(white: 0.6, alpha: 1)
+        }
     }
 
-    private func layoutNow() { layoutSubtreeIfNeeded(); layout() }
+    // ── Chips ───────────────────────────────────────────────────────────────
+
+    private func rebuildChips(_ available: [ClipboardFilter]) {
+        chipViews.forEach { $0.removeFromSuperview() }
+        chipViews = available.map { f in
+            let chip = ClipboardChipView(title: f.title, active: f == filter)
+            chip.onClick = { [weak self] in
+                guard let self else { return }
+                self.filter = self.filter == f ? nil : f
+                self.reload(keepingSelection: false)
+            }
+            chips.addSubview(chip)
+            return chip
+        }
+        var x = M.chipLeft
+        for chip in chipViews {
+            chip.frame = NSRect(x: x, y: 0, width: chip.fittingWidth, height: M.chipHeight)
+            x += chip.fittingWidth + M.chipGap
+        }
+    }
+
+    // ── Layout ──────────────────────────────────────────────────────────────
 
     override func layout() {
         super.layout()
         let w = bounds.width
-        searchIcon.frame = NSRect(x: M.sideInset, y: (M.searchHeight - 28) / 2, width: 28, height: 28)
-        let fieldHeight: CGFloat = 32
-        field.frame = NSRect(x: M.sideInset + 28 + 12, y: (M.searchHeight - fieldHeight) / 2,
-                             width: w - 2 * M.sideInset - 28 - 12, height: fieldHeight)
-        // Flipped, so the top is y 0; the fade view itself is not, and its own origin is its bottom-left.
-        let fadeHeight = min(bounds.height, M.fadeHeight)
-        fade.frame = NSRect(x: 0, y: 0, width: w, height: fadeHeight)
-        divider.frame = NSRect(x: 0, y: M.searchHeight, width: w, height: 1)
-        let listTop = M.searchHeight + 1
-        let listHeight = bounds.height - listTop - M.footerHeight
-        scroll.frame = NSRect(x: 0, y: listTop + M.listPadding, width: w, height: max(0, listHeight - 2 * M.listPadding))
-        table.tableColumns.first?.width = w
-        emptyLabel.frame = NSRect(x: M.sideInset, y: listTop + (listHeight - 20) / 2, width: w - 2 * M.sideInset, height: 20)
-        footer.frame = NSRect(x: M.sideInset, y: bounds.height - M.footerHeight + 7, width: w - 2 * M.sideInset, height: 16)
-        let empty = rows.isEmpty
-        scroll.isHidden = empty
-        emptyLabel.isHidden = !empty
+        pill.frame = NSRect(x: 0, y: 0, width: w, height: M.pillHeight)
+        let fieldHeight: CGFloat = 30
+        let rightSpace = M.accessoryCentreFromRight + M.accessorySize / 2 + 12
+        field.frame = NSRect(x: M.searchLeft - 4, y: (M.pillHeight - fieldHeight) / 2, width: w - M.searchLeft - rightSpace, height: fieldHeight)
+        accessory.frame = NSRect(x: w - M.accessoryCentreFromRight - M.accessorySize / 2, y: (M.pillHeight - M.accessorySize) / 2,
+                                 width: M.accessorySize, height: M.accessorySize)
+
+        if let h = cardHeight {
+            card.isHidden = false
+            card.frame = NSRect(x: 0, y: M.pillHeight + M.gap, width: w, height: h)
+            chips.frame = NSRect(x: 0, y: M.chipsTop, width: w, height: M.chipHeight)
+            chips.isHidden = chipViews.isEmpty
+            scroll.frame = NSRect(x: 0, y: M.rowsTop, width: w, height: max(0, h - M.rowsTop))
+            table.tableColumns.first?.width = w
+            emptyLabel.frame = NSRect(x: M.iconLeft, y: M.chipsTop + (h - M.chipsTop - 20) / 2 - 6, width: w - 2 * M.iconLeft, height: 20)
+            scroll.isHidden = rows.isEmpty
+            emptyLabel.isHidden = !rows.isEmpty
+        } else {
+            card.isHidden = true
+        }
     }
 
     // ── The table ───────────────────────────────────────────────────────────
@@ -527,13 +626,17 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
             c.identifier = Self.cellID
             return c
         }()
-        cell.configure(rows[row], icon: ClipboardIcons.icon(for: rows[row].entry, store: controller?.store), selected: row == table.selectedRow)
+        cell.configure(rows[row], icon: ClipboardIcons.icon(for: rows[row].entry, store: controller?.store))
+        cell.setSelected(row == table.selectedRow)
         return cell
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { ClipboardRowView() }
 
-    func tableViewSelectionDidChange(_ notification: Notification) { updateSelectionLook() }
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        updateSelectionLook()
+        updateAccessory()
+    }
 
     private func updateSelectionLook() {
         table.enumerateAvailableRowViews { rowView, row in
@@ -542,12 +645,51 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
     }
 }
 
-/// The selection: a rounded accent bar inset from the sides, as Spotlight draws it.
+// ── Chips ───────────────────────────────────────────────────────────────────
+
+/// A filter chip: a capsule of a light veil with the kind in it, lighter while it is on.
+final class ClipboardChipView: NSView {
+    private let label = NSTextField(labelWithString: "")
+    private let active: Bool
+    var onClick: (() -> Void)?
+
+    init(title: String, active: Bool) {
+        self.active = active
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = ClipboardPanelMetrics.chipHeight / 2
+        layer?.cornerCurve = .continuous
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(active ? 0.22 : 0.09).cgColor
+        label.stringValue = title
+        label.font = .systemFont(ofSize: ClipboardPanelMetrics.chipFontSize)
+        label.textColor = active ? .white : NSColor(white: 0.6, alpha: 1)
+        label.sizeToFit()
+        addSubview(label)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(title)
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    var fittingWidth: CGFloat { label.frame.width + 2 * ClipboardPanelMetrics.chipPadding }
+    var isActive: Bool { active }
+
+    override func layout() {
+        super.layout()
+        label.frame.origin = NSPoint(x: ClipboardPanelMetrics.chipPadding, y: (bounds.height - label.frame.height) / 2)
+    }
+
+    override func mouseDown(with event: NSEvent) { onClick?() }
+}
+
+// ── Rows ────────────────────────────────────────────────────────────────────
+
+/// The selection: a capsule of a light veil, inset from the card's sides, as the system panel draws it.
 final class ClipboardRowView: NSTableRowView {
     override func drawSelection(in dirtyRect: NSRect) {
-        let rect = bounds.insetBy(dx: ClipboardPanelMetrics.rowInset, dy: 1)
-        NSColor.controlAccentColor.setFill()
-        NSBezierPath(roundedRect: rect, xRadius: ClipboardPanelMetrics.selectionRadius, yRadius: ClipboardPanelMetrics.selectionRadius).fill()
+        let rect = bounds.insetBy(dx: ClipboardPanelMetrics.rowInset, dy: 0)
+        NSColor.white.withAlphaComponent(ClipboardPanelMetrics.selectionAlpha).setFill()
+        NSBezierPath(roundedRect: rect, xRadius: rect.height / 2, yRadius: rect.height / 2).fill()
     }
     override var isEmphasized: Bool { get { true } set {} }
 }
@@ -558,55 +700,53 @@ final class ClipboardRowCellView: NSView {
     private let subtitleField = NSTextField(labelWithString: "")
     private let hintField = NSTextField(labelWithString: "")
     private let pinView = NSImageView()
-    private var selected = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         iconView.imageScaling = .scaleProportionallyUpOrDown
-        titleField.font = .systemFont(ofSize: 14)
+        titleField.font = .systemFont(ofSize: ClipboardPanelMetrics.titleFontSize)
+        titleField.textColor = .white
         titleField.lineBreakMode = .byTruncatingTail
-        subtitleField.font = .systemFont(ofSize: 11.5)
+        subtitleField.font = .systemFont(ofSize: ClipboardPanelMetrics.detailFontSize)
         subtitleField.lineBreakMode = .byTruncatingTail
-        hintField.font = .systemFont(ofSize: 12)
+        hintField.font = .systemFont(ofSize: ClipboardPanelMetrics.titleFontSize)
         hintField.alignment = .right
         pinView.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: "Pinned")
+        pinView.contentTintColor = NSColor(white: 0.7, alpha: 1)
         for v in [iconView, titleField, subtitleField, hintField, pinView] as [NSView] { addSubview(v) }
+        setSelected(false)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    func configure(_ row: ClipboardRowModel, icon: NSImage?, selected: Bool) {
+    func configure(_ row: ClipboardRowModel, icon: NSImage?) {
         iconView.image = icon
         titleField.stringValue = row.title
         subtitleField.stringValue = row.subtitle
         hintField.stringValue = row.hint ?? ""
         pinView.isHidden = !row.entry.pinned
         setAccessibilityLabel("\(row.title), \(row.subtitle)\(row.entry.pinned ? ", pinned" : "")")
-        setSelected(selected)
         needsLayout = true
     }
 
     func setSelected(_ on: Bool) {
-        selected = on
-        titleField.textColor = on ? .white : .labelColor
-        subtitleField.textColor = on ? NSColor.white.withAlphaComponent(0.75) : .secondaryLabelColor
-        hintField.textColor = on ? NSColor.white.withAlphaComponent(0.75) : .tertiaryLabelColor
-        pinView.contentTintColor = on ? .white : .secondaryLabelColor
+        subtitleField.textColor = NSColor(white: on ? 0.72 : 0.58, alpha: 1)
+        hintField.textColor = NSColor(white: on ? 0.82 : 0.66, alpha: 1)
     }
 
     override func layout() {
         super.layout()
         let m = ClipboardPanelMetrics.self
-        let inset = m.rowInset + 12
-        iconView.frame = NSRect(x: inset, y: (bounds.height - m.iconSize) / 2, width: m.iconSize, height: m.iconSize)
-        let hintWidth: CGFloat = 36
-        hintField.frame = NSRect(x: bounds.width - inset - hintWidth, y: (bounds.height - 16) / 2, width: hintWidth, height: 16)
+        iconView.frame = NSRect(x: m.iconLeft, y: (bounds.height - m.iconSize) / 2, width: m.iconSize, height: m.iconSize)
+        let hintWidth: CGFloat = 40
+        hintField.frame = NSRect(x: bounds.width - m.trailingRight - hintWidth, y: (bounds.height - 22) / 2, width: hintWidth, height: 22)
         let pinWidth: CGFloat = pinView.isHidden ? 0 : 16
-        pinView.frame = NSRect(x: hintField.frame.minX - 6 - pinWidth, y: (bounds.height - 14) / 2, width: pinWidth, height: 14)
-        let textX = iconView.frame.maxX + 12
-        let textRight = (pinView.isHidden ? hintField.frame.minX : pinView.frame.minX) - 8
-        titleField.frame = NSRect(x: textX, y: bounds.height / 2 - 1, width: max(0, textRight - textX), height: 19)
-        subtitleField.frame = NSRect(x: textX, y: bounds.height / 2 - 18, width: max(0, textRight - textX), height: 16)
+        pinView.frame = NSRect(x: hintField.frame.minX - 8 - pinWidth, y: (bounds.height - 14) / 2, width: pinWidth, height: 14)
+        let right = (pinView.isHidden ? hintField.frame.minX : pinView.frame.minX) - 10
+        let width = max(0, right - m.titleLeft)
+        let hasSubtitle = !subtitleField.stringValue.isEmpty
+        titleField.frame = NSRect(x: m.titleLeft, y: hasSubtitle ? bounds.height / 2 - 1 : (bounds.height - 22) / 2, width: width, height: 22)
+        subtitleField.frame = NSRect(x: m.titleLeft, y: bounds.height / 2 - 21, width: width, height: 16)
     }
 }
 

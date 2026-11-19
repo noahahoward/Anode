@@ -320,6 +320,37 @@ final class ClipboardControllerTests: XCTestCase {
         XCTAssertTrue(r.scheduled.isEmpty)
     }
 
+    /// ⌘V goes to whatever is in front when it is sent. If another window came up in the moment between, the entry stays on the
+    /// clipboard and nothing is sent to the wrong app.
+    func testNothingIsPastedIntoAnAppThatIsNotTheOneItWasChosenFor() {
+        let r = Rig()
+        let ids = twoEntries(r)
+        r.controller.open()
+        r.controller.choose(ids.older, mode: .paste)
+        r.front = ("com.example.SomethingElse", "Something Else")     // another app came up before ⌘V
+        r.runScheduled()
+        XCTAssertEqual(r.pastes, 0)
+        XCTAssertTrue(r.lines.contains { $0.contains("no longer the one") }, "\(r.lines)")
+        XCTAssertFalse(r.lines.contains { $0.contains("older entry") })
+    }
+
+    // ── A panel left on screen ──────────────────────────────────────────────
+
+    /// The panel shows what was copied; it is not left up across a lock or a sleep.
+    func testAnOpenPanelIsPutAwayWhenTheSessionLocksOrTheScreensSleep() {
+        let r = Rig()
+        _ = twoEntries(r)
+        r.controller.open()
+        XCTAssertTrue(r.presenter.isOpen)
+        r.controller.setLocked(true)
+        XCTAssertFalse(r.presenter.isOpen)
+        r.controller.setLocked(false)
+        r.controller.open()
+        XCTAssertTrue(r.presenter.isOpen)
+        r.controller.setScreensAsleep(true)
+        XCTAssertFalse(r.presenter.isOpen)
+    }
+
     // ── Deleting, pinning, forgetting ───────────────────────────────────────
 
     func testDeletePinAndForgetEverythingTellThePanel() {

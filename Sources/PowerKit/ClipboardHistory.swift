@@ -536,12 +536,44 @@ public final class ClipboardStore {
 
 // ── Search and how long ago ─────────────────────────────────────────────────
 
+/// What the chips above the list narrow it to.
+public enum ClipboardFilter: String, CaseIterable, Equatable {
+    case text, link, image, file, pinned
+
+    public var title: String {
+        switch self {
+        case .text: return "Text"
+        case .link: return "Links"
+        case .image: return "Images"
+        case .file: return "Files"
+        case .pinned: return "Pinned"
+        }
+    }
+
+    public func admits(_ entry: ClipboardEntry) -> Bool {
+        switch self {
+        case .text: return entry.kind == .text
+        case .link: return entry.kind == .link
+        case .image: return entry.kind == .image
+        case .file: return entry.kind == .file
+        case .pinned: return entry.pinned
+        }
+    }
+
+    /// The filters that would leave at least one of `entries`, in a steady order: a chip for a kind nothing here is would only
+    /// show an empty list.
+    public static func available(in entries: [ClipboardEntry]) -> [ClipboardFilter] {
+        allCases.filter { filter in entries.contains { filter.admits($0) } }
+    }
+}
+
 public enum ClipboardSearch {
 
     /// The entries that match `query`, best first. Every word of the query must be in the entry (its text, the app it came
     /// from, or its kind named whole: "link", "image", "file", "text"), ignoring case and accents; a match at the start of the text, or of a word, ranks higher; ties go to
     /// the newer. An empty query is every entry: pinned first, then newest.
-    public static func results(_ entries: [ClipboardEntry], query: String) -> [ClipboardEntry] {
+    public static func results(_ entries: [ClipboardEntry], query: String, filter: ClipboardFilter? = nil) -> [ClipboardEntry] {
+        let entries = filter.map { f in entries.filter { f.admits($0) } } ?? entries
         let words = fold(query).split(whereSeparator: \.isWhitespace).map(String.init)
         if words.isEmpty {
             return entries.filter(\.pinned).sorted { $0.date > $1.date } + entries.filter { !$0.pinned }.sorted { $0.date > $1.date }

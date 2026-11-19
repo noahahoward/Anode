@@ -186,6 +186,8 @@ final class ClipboardHistoryController {
     func setScreensAsleep(_ asleep: Bool) {
         guard screensAsleep != asleep else { return }
         screensAsleep = asleep
+        // An open panel is not left on screen across a sleep or a lock: it shows what was copied.
+        if asleep, presenter.isOpen { presenter.hide() }
         apply(starting: false)
         onChange?()
     }
@@ -193,6 +195,7 @@ final class ClipboardHistoryController {
     func setLocked(_ isLocked: Bool) {
         guard locked != isLocked else { return }
         locked = isLocked
+        if isLocked, presenter.isOpen { presenter.hide() }
         apply(starting: false)
         onChange?()
     }
@@ -256,9 +259,14 @@ final class ClipboardHistoryController {
         presenter.hide { [weak self] in self?.restoreFront(front) }
     }
 
-    /// The entries to list for what was typed.
-    func results(for query: String) -> [ClipboardEntry] {
-        ClipboardSearch.results(store.entries, query: query)
+    /// The entries to list for what was typed, narrowed by the chip that is on.
+    func results(for query: String, filter: ClipboardFilter? = nil) -> [ClipboardEntry] {
+        ClipboardSearch.results(store.entries, query: query, filter: filter)
+    }
+
+    /// The chips to offer for what was typed: a kind (or "Pinned") for each that has something among the matches.
+    func filters(for query: String) -> [ClipboardFilter] {
+        ClipboardFilter.available(in: ClipboardSearch.results(store.entries, query: query))
     }
 
     /// An entry was chosen. It goes back on the pasteboard (and to the top of the list); the panel goes; then, for a paste, ⌘V
@@ -282,6 +290,12 @@ final class ClipboardHistoryController {
             guard mode != .copyOnly else { return }
             self.schedule(Self.pasteDelay) { [weak self] in
                 guard let self else { return }
+                // ⌘V goes to whatever is in front when it is sent: if that is not the app the entry was chosen for (another window
+                // came up, the app quit), it is not sent, and the entry waits on the clipboard.
+                if let expected = front, self.frontApp().bundleID != expected {
+                    self.log("not pasted: the app in front is no longer the one the entry was chosen for; it is on the clipboard")
+                    return
+                }
                 if !self.sendPaste() { self.log("could not paste: Anode has no Accessibility; the entry is on the clipboard") }
             }
         }
