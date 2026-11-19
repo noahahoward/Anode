@@ -181,7 +181,7 @@ final class BetaFeaturesWindowController: NSWindowController {
         sections = features.map { feature in
             let title = NSTextField(labelWithString: feature.title)
             title.font = .boldSystemFont(ofSize: NSFont.systemFontSize + 1)
-            let summary = Self.wrapping(feature.summary, color: .secondaryLabelColor)
+            let summary = Self.summaryLabel(feature.summary)
             let view = feature.makeView()
             let section = NSStackView(views: [title, summary, view])
             section.orientation = .vertical
@@ -275,6 +275,19 @@ final class BetaFeaturesWindowController: NSWindowController {
     }
 
     /// A wrapped label that does not grow the window sideways.
+    /// A feature's description, with the sentence about macOS's privacy indicator (`PrivacyIndicatorNote`) in bold and in the main
+    /// text colour, so that it is not missed.
+    static func summaryLabel(_ summary: String) -> NSTextField {
+        let label = wrapping(summary, color: .secondaryLabelColor)
+        guard let range = PrivacyIndicatorNote.range(in: summary) else { return label }
+        let size = NSFont.smallSystemFontSize
+        let text = NSMutableAttributedString(string: summary, attributes: [.font: NSFont.systemFont(ofSize: size),
+                                                                          .foregroundColor: NSColor.secondaryLabelColor])
+        text.addAttributes([.font: NSFont.boldSystemFont(ofSize: size), .foregroundColor: NSColor.labelColor], range: NSRange(range, in: summary))
+        label.attributedStringValue = text
+        return label
+    }
+
     static func wrapping(_ text: String, color: NSColor = .labelColor, size: CGFloat = NSFont.smallSystemFontSize)
         -> NSTextField {
         let label = NSTextField(wrappingLabelWithString: text)
@@ -517,6 +530,7 @@ final class WindowSwitcherFeature: BetaFeature {
         // best right after the user has asked for the thing that needs it.
         if on && !accessibility() { AccessibilityAccess.request() }
         settings.windowSwitcherEnabled = on
+        if on { saysItsPrivacyNote() }
     }
 
     @objc private func openAccessibility() {
@@ -725,6 +739,7 @@ final class DesktopSwitcherFeature: BetaFeature {
         let on = enableCheckbox.state == .on
         if on && !accessibility() { AccessibilityAccess.request() }
         settings.desktopSwitcherEnabled = on
+        if on { saysItsPrivacyNote() }
     }
 
     @objc private func openAccessibility() {
@@ -826,6 +841,7 @@ final class WindowActionsFeature: BetaFeature {
         let on = enableCheckbox.state == .on
         if on && !accessibility() { AccessibilityAccess.request() }
         settings.windowSnapperEnabled = on
+        if on { saysItsPrivacyNote() }
         // The hot keys are registered as the setting changes; what they said is read a moment later.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.refresh() }
     }
@@ -951,6 +967,7 @@ final class WindowGroupsFeature: BetaFeature {
         let on = enableCheckbox.state == .on
         if on && !accessibility() { AccessibilityAccess.request() }
         settings.windowGroupsEnabled = on
+        if on { saysItsPrivacyNote() }
         controller()?.onChange = { [weak self] in self?.refresh() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.refresh() }
     }
@@ -1312,6 +1329,7 @@ final class KeyboardCleanerFeature: BetaFeature {
             refresh()
             return
         }
+        saysItsPrivacyNote()
         cleaner()?.start()
         refresh()
     }

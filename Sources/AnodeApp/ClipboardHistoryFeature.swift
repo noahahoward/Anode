@@ -141,6 +141,7 @@ final class ClipboardHistoryFeature: BetaFeature {
     @objc private func enableToggled() {
         let on = enableCheckbox.state == .on
         settings.clipboardHistoryEnabled = on
+        if on { saysItsPrivacyNote() }
         // The shortcut and the paste both need it: ask when the switch goes on, as the other key features do.
         if on, !accessibility() { AccessibilityAccess.request() }
     }

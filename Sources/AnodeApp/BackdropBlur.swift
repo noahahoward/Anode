@@ -14,14 +14,28 @@ import AppKit
 
 final class BackdropBlurView: NSView {
 
+    /// How the blur fades toward the edge of the shape it frosts: the system's frost lightens round the edge, so that what the glass's rim
+    /// bends is seen sharper there. The mask is a rounded rectangle, `inset` points in from the shape's edge and blurred by `sigma`.
+    struct Feather: Equatable {
+        var cornerRadius: CGFloat
+        var inset: CGFloat
+        var sigma: CGFloat
+    }
+
     /// The blur's radius (a gaussian's sigma, in points); 0 is none.
     let sigma: CGFloat
+    let feather: Feather?
+    /// How far this view reaches past the shape above and below (the glass is made taller than its shape, and the shape's clip cuts the rest).
+    var overhangTop: CGFloat = 0 { didSet { needsLayout = true } }
+    var overhangBottom: CGFloat = 0 { didSet { needsLayout = true } }
     /// The system's layer, a sublayer of this view's own plain one (as the view's own backing layer it was reset by AppKit and blurred
     /// nothing).
     private(set) var blurLayer: CALayer?
+    private var maskedFor: (size: CGSize, top: CGFloat, bottom: CGFloat, scale: CGFloat)?
 
-    init(sigma: CGFloat) {
+    init(sigma: CGFloat, feather: Feather? = nil) {
         self.sigma = sigma
+        self.feather = feather
         super.init(frame: .zero)
         wantsLayer = true
         if let blur = Self.makeLayer(sigma: sigma) {
@@ -37,11 +51,50 @@ final class BackdropBlurView: NSView {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         blurLayer?.frame = bounds
+        updateMask()
         CATransaction.commit()
     }
 
     /// It is only a look: it takes no clicks.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private func updateMask() {
+        guard let blurLayer, let feather, bounds.width > 1, bounds.height > 1 else { return }
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let key = (size: bounds.size, top: overhangTop, bottom: overhangBottom, scale: scale)
+        if let done = maskedFor, done == key { return }
+        maskedFor = key
+        let shape = CGRect(x: 0, y: overhangBottom, width: bounds.width, height: bounds.height - overhangTop - overhangBottom)
+        guard let image = Self.featherMask(size: bounds.size, shape: shape, feather: feather, scale: scale) else { return }
+        let mask = CALayer()
+        mask.frame = bounds
+        mask.contents = image
+        mask.contentsScale = scale
+        blurLayer.mask = mask
+    }
+
+    /// The mask: white (the blur shows) inside a rounded rectangle `feather.inset` in from `shape`'s edge, blurred so it fades to nothing
+    /// at the edge. `shape` is in the view's coordinates (y up).
+    static func featherMask(size: CGSize, shape: CGRect, feather: Feather, scale: CGFloat) -> CGImage? {
+        let w = Int((size.width * scale).rounded()), h = Int((size.height * scale).rounded())
+        guard w > 1, h > 1,
+              let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+        context.setFillColor(gray: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        let inner = shape.insetBy(dx: feather.inset, dy: feather.inset)
+        let r = max(0, feather.cornerRadius - feather.inset)
+        context.setFillColor(gray: 1, alpha: 1)
+        context.addPath(CGPath(roundedRect: CGRect(x: inner.minX * scale, y: inner.minY * scale, width: inner.width * scale, height: inner.height * scale),
+                               cornerWidth: r * scale, cornerHeight: r * scale, transform: nil))
+        context.fillPath()
+        guard let sharp = context.makeImage() else { return nil }
+        let blur = CIFilter(name: "CIGaussianBlur")
+        blur?.setValue(CIImage(cgImage: sharp).clampedToExtent(), forKey: kCIInputImageKey)
+        blur?.setValue(Double(feather.sigma * scale), forKey: kCIInputRadiusKey)
+        guard let out = blur?.outputImage else { return sharp }
+        return CIContext().createCGImage(out, from: CGRect(x: 0, y: 0, width: w, height: h)) ?? sharp
+    }
 
     /// Whether the system's blur layer is there on this macOS.
     static var isAvailable: Bool { makeLayer(sigma: 1) != nil }

@@ -44,6 +44,10 @@ enum ClipboardPanelMetrics {
     /// about 20 points: a sigma of 8), its bar only a little (about 3.4 points: 1.5). See `BackdropBlurView`.
     static let cardBlur: CGFloat = 8
     static let pillBlur: CGFloat = 1.5
+    /// The frost lightens toward the edge: the blur fades out over the last few points of each shape (its mask is a rounded rectangle this
+    /// far in from the edge, blurred by this much), so the glass's rim bends a sharper backdrop there, as the system's does.
+    static let frostFeatherInset: CGFloat = 7
+    static let frostFeatherSigma: CGFloat = 4
     /// The card's glass is not extended past its bottom: its own edge shows there, which bends what is behind it. (The system's card has
     /// none; this is a choice, for a thicker look at the bottom.)
     static let cardBottomBleed: CGFloat = 0
@@ -711,7 +715,8 @@ final class ClipboardShapeView: NSView {
             v.state = .active
             material = v
         }
-        frost = BackdropBlurView(sigma: kind == .card ? ClipboardPanelMetrics.cardBlur : ClipboardPanelMetrics.pillBlur)
+        frost = BackdropBlurView(sigma: kind == .card ? ClipboardPanelMetrics.cardBlur : ClipboardPanelMetrics.pillBlur,
+                                 feather: .init(cornerRadius: r, inset: ClipboardPanelMetrics.frostFeatherInset, sigma: ClipboardPanelMetrics.frostFeatherSigma))
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = r
@@ -742,6 +747,8 @@ final class ClipboardShapeView: NSView {
         // The glass is taller than the shape; the shape's clip (rounded corners, `masksToBounds`) cuts the rest off.
         let bleed = ClipboardPanelMetrics.glassBleed
         material.frame = NSRect(x: 0, y: -bottomBleed, width: bounds.width, height: bounds.height + bleed + bottomBleed)
+        frost.overhangTop = bleed
+        frost.overhangBottom = bottomBleed
         frost.frame = material.frame
         body.frame = bounds
         tint.frame = bounds

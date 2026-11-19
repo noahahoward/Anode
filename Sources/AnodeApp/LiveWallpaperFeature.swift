@@ -591,7 +591,10 @@ final class LiveWallpaperFeature: BetaFeature {
         prefsStore.prefs = p
     }
 
-    @objc private func enableToggled() { settings.liveWallpaperEnabled = enableCheckbox.state == .on }
+    @objc private func enableToggled() {
+        settings.liveWallpaperEnabled = enableCheckbox.state == .on
+        if enableCheckbox.state == .on { saysItsPrivacyNote() }
+    }
     @objc private func scalingChosen() {
         let i = scalingPopUp.indexOfSelectedItem
         guard WallpaperScaling.allCases.indices.contains(i) else { return }

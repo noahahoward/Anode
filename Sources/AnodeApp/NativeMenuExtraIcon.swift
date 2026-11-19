@@ -91,7 +91,10 @@ final class NativeMenuExtraIcon: NativeIconHosting {
                 if let v = Self.attribute(item, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &r) }   // type checked
                 var itemFrame = CGRect.zero
                 if let v = Self.attribute(group, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &itemFrame) }   // type checked
-                return remember(r.isEmpty ? nil : r, pid: pid, bar: itemFrame.isEmpty ? nil : itemFrame)
+                if r.isEmpty { return remember(nil, pid: pid) }
+                // With the menu bar set to hide the frames are the hidden bar's, above the top edge: the frame kept is where they are when it shows.
+                let shown = NativeIconClickGate.shownPosition(icon: r, bar: itemFrame.isEmpty ? nil : itemFrame)
+                return remember(shown.icon, pid: pid, bar: shown.bar)
             }
         }
         return remember(nil, pid: 0)

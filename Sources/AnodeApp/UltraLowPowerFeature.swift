@@ -458,7 +458,10 @@ final class UltraLowPowerFeature: BetaFeature {
 
     // ── Actions ─────────────────────────────────────────────────────────────
 
-    @objc private func toggled() { settings.ultraLowPowerEnabled = enableCheckbox.state == .on }
+    @objc private func toggled() {
+        settings.ultraLowPowerEnabled = enableCheckbox.state == .on
+        if enableCheckbox.state == .on { saysItsPrivacyNote() }
+    }
 
     @objc private func efficiencyToggled() { settings.ultraLowPowerEfficiencyCores = efficiencyCheckbox.state == .on }
 

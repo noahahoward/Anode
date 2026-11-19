@@ -146,5 +146,24 @@ final class NativeIconClickGateTests: XCTestCase {
         let bar = CGRect(x: 1578, y: 0, width: 26, height: 39)
         XCTAssertTrue(NativeIconClickGate.isOnCover(CGPoint(x: 1590, y: 0), of: battery, bar: bar))
     }
-}
 
+    /// With the menu bar set to hide, Accessibility gives the items' frames above the top edge; the gate keeps them where they sit when
+    /// the bar is shown, so the click that comes as the bar slides in is still near the icon.
+    func testAFrameAboveTheTopEdgeIsBroughtDownToWhereTheBarSitsWhenShown() {
+        let icon = CGRect(x: 1544, y: -30.5, width: 22, height: 22), bar = CGRect(x: 1536, y: -39, width: 40, height: 39)
+        let shown = NativeIconClickGate.shownPosition(icon: icon, bar: bar)
+        XCTAssertEqual(shown.bar, CGRect(x: 1536, y: 0, width: 40, height: 39))
+        XCTAssertEqual(shown.icon, CGRect(x: 1544, y: 8.5, width: 22, height: 22))
+        XCTAssertTrue(NativeIconClickGate.isNear(CGPoint(x: 1555, y: 19), shown.icon, bar: shown.bar))
+        XCTAssertFalse(NativeIconClickGate.isNear(CGPoint(x: 1555, y: 19), icon, bar: bar), "the frame as reported was nowhere near")
+    }
+
+    /// A bar that is shown is as it was.
+    func testAFrameOnTheScreenIsLeftAlone() {
+        let icon = CGRect(x: 1544, y: 8.5, width: 22, height: 22), bar = CGRect(x: 1536, y: 0, width: 40, height: 39)
+        let shown = NativeIconClickGate.shownPosition(icon: icon, bar: bar)
+        XCTAssertEqual(shown.icon, icon)
+        XCTAssertEqual(shown.bar, bar)
+        XCTAssertEqual(NativeIconClickGate.shownPosition(icon: icon, bar: nil).bar, nil)
+    }
+}

@@ -45,6 +45,7 @@ final class BatteryMenuFeature: BetaFeature {
     @objc private func enableToggled() {
         let on = enableCheckbox.state == .on
         settings.batteryMenuEnabled = on
+        if on { saysItsPrivacyNote() }
         if on && !accessibility() { AccessibilityAccess.request() }
         refresh()
     }

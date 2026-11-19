@@ -299,16 +299,33 @@ final class BatteryMenuController {
 
     // ── What the person presses ─────────────────────────────────────────────
 
+    /// macOS's own id for the Energy Mode that follows the Mac's own judgement.
+    static let automaticID = "automatic"
+
     func pickMode(_ id: String) {
         if id == Self.ultraID { askForUltra(); return }
         guard var apple = reading, let mode = apple.modes.first(where: { $0.id == id }) else { return }
         let ultraRunning = ultra?.isOn == true && settings.ultraLowPowerEnabled
-        // Already the mode in force: nothing to press. (While the mode runs macOS reads Low Power, which is not the person's choice.)
-        guard ultraRunning || !mode.isSelected else { return }
+        // Pressing the mode that is on turns it off. Where macOS lists one mode only (a MacBook Neo has just Low Power) it is a switch, and
+        // the press is the one that flips it; where it lists several, off is Automatic, which is pressed instead. (macOS's own panel on
+        // those Macs ignores a press on the mode already on, and so did this menu: a tester could not turn Low Power off.) Pressing
+        // Automatic while it is on does nothing. While Ultra Low Power runs, macOS reads Low Power, which is not the person's choice:
+        // a press on any row ends the mode and puts that row's mode in force, below.
+        var pressed = mode
+        var turnsOff = false
+        if mode.isSelected && !ultraRunning {
+            if apple.modes.count == 1 {
+                turnsOff = true
+            } else if let automatic = apple.modes.first(where: { $0.id == Self.automaticID }), automatic.id != mode.id {
+                pressed = automatic
+            } else {
+                return
+            }
+        }
         let before = reading
         // The check moves at once; macOS's answer decides whether it stays. (A press takes about 0.8 s to go through macOS's panel: the
         // check waiting for it would feel slower than macOS's own.)
-        apple.modes = apple.modes.map { var m = $0; m.isSelected = m.id == id; return m }
+        apple.modes = apple.modes.map { var m = $0; m.isSelected = !turnsOff && m.id == pressed.id; return m }
         reading = apple
         if ultraRunning, let ultra {
             // It ends first and puts everything back (it restores the person's own power mode); only then is the choice pressed.
@@ -319,7 +336,7 @@ final class BatteryMenuController {
             return
         }
         redraw()
-        send(modeID: id, title: mode.title, before: before)
+        send(modeID: pressed.id, title: pressed.title, before: before)
     }
 
     private func send(modeID id: String, title: String, before: AppleBatteryPanel?) {

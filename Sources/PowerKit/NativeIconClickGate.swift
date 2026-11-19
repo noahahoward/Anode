@@ -44,6 +44,17 @@ public struct NativeIconClickGate {
         return point.y >= top && point.y <= bottom && point.x >= icon.minX - slack && point.x <= icon.maxX + slack
     }
 
+    /// Where the icon and its item are when the menu bar is on the screen. With the bar set to hide, Accessibility reports the items
+    /// where the bar is while hidden, above the top edge, so a click on the icon of a bar that has just slid in (before the next look)
+    /// landed nowhere near the frame the gate had, and went to macOS. The icon's place along the bar is the same hidden or shown; only
+    /// its height differs, so a frame above the top edge is brought down to where the bar sits when it is shown (its top at 0).
+    public static func shownPosition(icon: CGRect, bar: CGRect?) -> (icon: CGRect, bar: CGRect?) {
+        let top = min(icon.minY, bar?.minY ?? .infinity)
+        guard top < 0 else { return (icon, bar) }
+        let shift = -top
+        return (icon.offsetBy(dx: 0, dy: shift), bar?.offsetBy(dx: 0, dy: shift))
+    }
+
     /// Whether a click is on the still picture Anode keeps over `icon` while macOS's panel is read: the icon's own width and the
     /// room the picture has round it (`IconCoverGeometry`), not the wider slack of `isNear`: a neighbouring icon is inside that.
     public static func isOnCover(_ point: CGPoint, of icon: CGRect, bar: CGRect? = nil) -> Bool {

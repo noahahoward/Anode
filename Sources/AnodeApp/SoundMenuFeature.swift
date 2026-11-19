@@ -64,6 +64,7 @@ final class SoundMenuFeature: BetaFeature {
 
     @objc private func nativeIconToggled() {
         settings.soundMenuUsesNativeIcon = nativeIconCheckbox.state == .on
+        if nativeIconCheckbox.state == .on { saysItsPrivacyNote() }
         refresh()
     }
 

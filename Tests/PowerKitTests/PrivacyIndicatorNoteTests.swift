@@ -22,6 +22,34 @@ final class PrivacyIndicatorNoteTests: XCTestCase {
         XCTAssertTrue(PrivacyIndicatorNote.text(while: "x", watching: "y").contains("any app that does"))
     }
 
+    /// The sentence is found at the end of a feature's description, to be shown in bold (a tester missed it in grey).
+    func testTheSentenceIsFoundInASummaryAndNothingElseIsTaken() {
+        let sentence = PrivacyIndicatorNote.text(while: "this is on", watching: "the keyboard for its shortcut")
+        let summary = "Groups last until Anode quits or the windows close. " + sentence
+        XCTAssertEqual(PrivacyIndicatorNote.sentence(in: summary), sentence)
+        let range = try? XCTUnwrap(PrivacyIndicatorNote.range(in: summary))
+        XCTAssertEqual(range.map { summary.distance(from: summary.startIndex, to: $0.lowerBound) }, 52)
+        XCTAssertEqual(range.map { $0.upperBound }, summary.endIndex, "it ends the summary")
+        XCTAssertNil(PrivacyIndicatorNote.range(in: "Groups last until Anode quits or the windows close."))
+    }
+
+    /// In the Beta Features window the sentence is bold, in the main text colour; the rest is as it was.
+    func testTheDescriptionShowsTheSentenceInBold() throws {
+        _ = NSApplication.shared
+        let sentence = PrivacyIndicatorNote.text(while: "this is on", watching: "the keyboard for its shortcut")
+        let summary = "Does a thing. " + sentence
+        let label = BetaFeaturesWindowController.summaryLabel(summary)
+        let text = label.attributedStringValue
+        XCTAssertEqual(text.string, summary)
+        let plain = text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+        let bold = text.attribute(.font, at: summary.count - 3, effectiveRange: nil) as? NSFont
+        XCTAssertEqual(plain.map { NSFontManager.shared.traits(of: $0).contains(.boldFontMask) }, false)
+        XCTAssertEqual(bold.map { NSFontManager.shared.traits(of: $0).contains(.boldFontMask) }, true)
+        XCTAssertEqual(text.attribute(.foregroundColor, at: summary.count - 3, effectiveRange: nil) as? NSColor, NSColor.labelColor)
+        // a description with no such sentence is the plain label it was
+        XCTAssertEqual(BetaFeaturesWindowController.summaryLabel("Does a thing.").stringValue, "Does a thing.")
+    }
+
     func testTheSentenceDoesNotBlameAccessibility() {
         // Reading another app through Accessibility shows that app's name ("Accessing Dock"), never "all apps".
         XCTAssertFalse(PrivacyIndicatorNote.text(while: "x", watching: "y").contains("Accessibility"))

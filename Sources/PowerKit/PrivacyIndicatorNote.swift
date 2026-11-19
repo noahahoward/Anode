@@ -15,4 +15,16 @@ public enum PrivacyIndicatorNote {
         "While \(condition), macOS 27.3 and later shows \u{201C}Accessing all apps\u{201D} for Anode in the menu bar, because "
             + "Anode watches \(watching). macOS says that for any app that does."
     }
+
+    /// Where the sentence is in a feature's summary (it ends the summary, after "While …"): to be shown in bold, so it is not missed.
+    /// nil when the summary has none.
+    public static func range(in summary: String) -> Range<String.Index>? {
+        guard let marker = summary.range(of: "macOS 27.3 and later shows"),
+              let start = summary.range(of: "While ", options: .backwards, range: summary.startIndex..<marker.lowerBound)?.lowerBound,
+              let end = summary.range(of: "any app that does.", range: marker.upperBound..<summary.endIndex)?.upperBound else { return nil }
+        return start..<end
+    }
+
+    /// The sentence itself, as found in a summary.
+    public static func sentence(in summary: String) -> String? { range(in: summary).map { String(summary[$0]) } }
 }

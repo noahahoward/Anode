@@ -237,6 +237,7 @@ final class MenuBarHiderFeature: BetaFeature {
     @objc private func enableToggled() {
         let on = enableCheckbox.state == .on
         settings.menuBarHiderEnabled = on
+        if on { saysItsPrivacyNote() }
         if on && !accessibility() { AccessibilityAccess.request() }
         refresh()
     }

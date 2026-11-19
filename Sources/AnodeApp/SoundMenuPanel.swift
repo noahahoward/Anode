@@ -107,6 +107,7 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
 
     private let content = SoundMenuContentView()
     private var monitors: [Any] = []
+    private let barWatch = MenuBarWatch()
     private let volumeKeys = MediaKeyTap()
     private var anchor = CGRect.zero
     /// System uptime when the menu came up: an Esc pressed before that is not one that closes it (see `ClickAway.escapeCloses`).
@@ -162,6 +163,16 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
         if let click = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] event in
             self?.closeUnlessOnItem(event)
         }) { monitors.append(click) }
+        // A click in one of Anode's own windows is not seen by a global monitor (it is not another app's event): this is.
+        if let own = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] event in
+            if event.window !== self { self?.closeUnlessOnItem(event) }
+            return event
+        }) { monitors.append(own) }
+        // The menu bar sliding away (it is set to hide) closes macOS's own menus; it closes this one too.
+        barWatch.start { [weak self] in
+            FeatureLog.append("sound-menu.log", "closed: the menu bar went away")
+            if let controller = self?.controller { controller.closeMenu() } else { self?.close() }
+        }
         // Esc closes it, as it does macOS's own. The menu is never the key window (see `canBecomeKey`), so keys do not come to it;
         // this listens for the key only while the menu is open, reads nothing but the key code (never the characters typed) and
         // its time, and keeps nothing. Without Accessibility macOS delivers no keys to it and Esc simply does nothing.
@@ -241,6 +252,7 @@ final class SoundMenuPanel: NSPanel, SoundMenuPresenting {
     func close(fade: Bool) {
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll()
+        barWatch.stop()
         volumeKeys.stop()
         stopGlide()
         // macOS's fades out in a straight line over about 240 ms (measured, as the Battery panel's is), except when another icon's

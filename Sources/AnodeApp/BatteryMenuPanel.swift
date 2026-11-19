@@ -72,6 +72,7 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
 
     private let content = BatteryMenuContentView()
     private var monitors: [Any] = []
+    private let barWatch = MenuBarWatch()
     private var anchor = CGRect.zero
     /// System uptime when the menu came up: an Esc pressed before that is not one that closes it (see `ClickAway.escapeCloses`).
     private var openedAt: Double = 0
@@ -120,6 +121,16 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
         if let click = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] event in
             self?.closeUnlessOnItem(event)
         }) { monitors.append(click) }
+        // A click in one of Anode's own windows is not seen by a global monitor (it is not another app's event): this is.
+        if let own = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown], handler: { [weak self] event in
+            if event.window !== self { self?.closeUnlessOnItem(event) }
+            return event
+        }) { monitors.append(own) }
+        // The menu bar sliding away (it is set to hide) closes macOS's own menus; it closes this one too.
+        barWatch.start { [weak self] in
+            FeatureLog.append("battery-menu.log", "closed: the menu bar went away")
+            if let controller = self?.controller { controller.closeMenu() } else { self?.close() }
+        }
         // Esc closes it, as it does macOS's own. Reads nothing but the key code and its time, and keeps nothing.
         if let esc = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown], handler: { [weak self] event in
             guard let self, ClickAway.escapeCloses(keyCode: event.keyCode, eventTime: event.timestamp, openedAt: self.openedAt) else { return }
@@ -141,6 +152,7 @@ final class BatteryMenuPanel: NSPanel, BatteryMenuPresenting {
     func close(fade: Bool) {
         for m in monitors { NSEvent.removeMonitor(m) }
         monitors.removeAll()
+        barWatch.stop()
         // macOS's fades out, except when another icon's panel takes its place; so does this, as a picture of itself (see `PanelFade`).
         if fade { PanelFade.close(self) { orderOut(nil) } } else { orderOut(nil) }
     }

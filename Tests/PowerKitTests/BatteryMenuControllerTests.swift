@@ -70,14 +70,15 @@ final class BatteryMenuControllerTests: XCTestCase {
     }
 
     /// The panel as macOS draws it, with `selected` the Energy Mode in force.
-    private func tree(selected: String = "automatic", source: String = "Battery", apps: [String] = []) -> AXNode {
+    private func tree(selected: String = "automatic", source: String = "Battery", apps: [String] = [],
+                      modes: [(id: String, title: String)] = [("automatic", "Automatic"), ("low", "Low Power"), ("high", "High Power")]) -> AXNode {
         func mode(_ id: String, _ title: String) -> AXNode {
             node("AXCheckBox", id: "energy-mode-\(id)", desc: title, value: selected == id ? "1" : "0", sub: "AXToggle")
         }
         var kids = [node("AXStaticText", id: "battery-header", value: "Battery"),
                     node("AXStaticText", id: "battery-header", value: "Power Source: \(source)"),
                     node("AXHeading", desc: "Energy Mode"),
-                    mode("automatic", "Automatic"), mode("low", "Low Power"), mode("high", "High Power")]
+                    ] + modes.map { mode($0.id, $0.title) }
         if !apps.isEmpty { kids.append(node("AXHeading", desc: "Using Significant Energy")); kids += apps.map { node("AXButton", desc: $0) } }
         kids.append(node("AXButton", desc: "Battery Settings…"))
         return node("AXWindow", sub: "AXSystemDialog", children: [node("AXGroup", sub: "AXHostingView", children: kids)])
@@ -209,12 +210,35 @@ final class BatteryMenuControllerTests: XCTestCase {
         XCTAssertEqual(r.driver.jobs.last?.1, .press(SystemPanelRow(identifier: "energy-mode-high", description: "High Power")))
     }
 
-    func testPickingTheModeAlreadyInForceDoesNothing() throws {
+    /// Pressing the mode that is on turns it off: where macOS lists several, that is Automatic.
+    func testPickingTheModeAlreadyInForceGoesBackToAutomatic() throws {
         let r = try rig(lastReading: true); defer { r.cleanup() }
         r.native.onClick?(r.native.frame!)
         r.driver.complete(0, .tree(tree(selected: "low")))
         r.controller.pickMode("low")
+        XCTAssertEqual(r.presenter.shown.last?.selectedModeID, "automatic", "the check moves at once")
+        XCTAssertEqual(r.driver.jobs.last?.1, .press(SystemPanelRow(identifier: "energy-mode-automatic", description: "Automatic")))
+    }
+
+    /// Automatic is the way back; pressing it while it is on has nothing to turn off.
+    func testPickingAutomaticWhileItIsOnDoesNothing() throws {
+        let r = try rig(lastReading: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        r.driver.complete(0, .tree(tree(selected: "automatic")))
+        r.controller.pickMode("automatic")
         XCTAssertEqual(r.driver.jobs.count, 1, "only the read")
+    }
+
+    /// A MacBook Neo lists Low Power alone: it is a switch there, and pressing it while it is on is the press that turns it off.
+    func testWhereMacOSListsOnlyLowPowerPressingItTurnsItOff() throws {
+        let r = try rig(lastReading: true); defer { r.cleanup() }
+        r.native.onClick?(r.native.frame!)
+        let only = tree(selected: "low", modes: [("low", "Low Power")])
+        r.driver.complete(0, .tree(only))
+        XCTAssertEqual(r.presenter.shown.last?.modes.filter { $0.id != "ultra" }.map(\.id), ["low"])
+        r.controller.pickMode("low")
+        XCTAssertNil(r.presenter.shown.last?.selectedModeID, "off: nothing is checked")
+        XCTAssertEqual(r.driver.jobs.last?.1, .press(SystemPanelRow(identifier: "energy-mode-low", description: "Low Power")))
     }
 
     func testARefusedPressPutsTheCheckBack() throws {

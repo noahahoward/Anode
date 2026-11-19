@@ -378,6 +378,26 @@ final class ClipboardPanelTests: XCTestCase {
         XCTAssertTrue(view.layer?.sublayers?.contains { $0 === view.blurLayer } ?? false, "as a sublayer: AppKit resets the filters of a view's own layer")
     }
 
+    /// The frost lightens toward the edge (the system's does, so the glass's rim shows a sharper backdrop): the blur's mask is clear at the
+    /// shape's edge and whole a little way in.
+    func testTheFrostFadesOutTowardTheShapesEdge() throws {
+        typealias M = ClipboardPanelMetrics
+        let size = CGSize(width: 520, height: 330)
+        let shape = CGRect(x: 0, y: 0, width: 520, height: 324)       // 6 points of overhang at the top
+        let feather = BackdropBlurView.Feather(cornerRadius: 38, inset: M.frostFeatherInset, sigma: M.frostFeatherSigma)
+        let image = try XCTUnwrap(BackdropBlurView.featherMask(size: size, shape: shape, feather: feather, scale: 1))
+        let rep = NSBitmapImageRep(cgImage: image)
+        func gray(_ x: Int, fromBottom y: Int) -> CGFloat { rep.colorAt(x: x, y: rep.pixelsHigh - 1 - y)!.whiteComponent }
+        XCTAssertLessThan(gray(260, fromBottom: 0), 0.1, "clear at the bottom edge")
+        XCTAssertGreaterThan(gray(260, fromBottom: 20), 0.95, "whole 20 points in")
+        XCTAssertGreaterThan(gray(260, fromBottom: 7), 0.3)
+        XCTAssertLessThan(gray(260, fromBottom: 7), 0.7, "half way at the inset")
+        XCTAssertLessThan(gray(0, fromBottom: 160), 0.1, "clear at the left edge")
+        XCTAssertGreaterThan(gray(40, fromBottom: 160), 0.95)
+        XCTAssertLessThan(gray(260, fromBottom: 323), 0.1, "clear at the top edge of the shape, not the view's")
+        XCTAssertLessThan(gray(2, fromBottom: 2), 0.05, "and at the corner")
+    }
+
     /// A short card (few entries) is the same curve cut off where it ends, not stretched.
     func testAShortCardIsTheSameCurveCutShort() {
         typealias M = ClipboardPanelMetrics
