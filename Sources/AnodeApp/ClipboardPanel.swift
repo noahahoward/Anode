@@ -34,6 +34,8 @@ enum ClipboardPanelMetrics {
     // The bar
     static let searchFontSize: CGFloat = 21
     static let searchLeft: CGFloat = 39              // measured
+    /// A line's box is centred in the bar, and the letters in it sit a little above that: this brings them to the bar's middle.
+    static let searchTextDrop: CGFloat = 3
     static let accessorySize: CGFloat = 33           // measured: the picture at the bar's right
     static let accessoryCentreFromRight: CGFloat = 46.5
     /// Black over the glass, at the bar's top and at its bottom, and the card's (measured over a light backdrop).
@@ -297,7 +299,7 @@ final class ClipboardFieldEditor: NSTextView {
     static let glowRadius: CGFloat = 6
 
     init() {
-        super.init(frame: .zero, textContainer: nil)
+        super.init(frame: .zero)        // the designated one that makes its own text system: without it nothing typed is kept
         isFieldEditor = true
         isRichText = false
         drawsBackground = false
@@ -343,8 +345,9 @@ final class ClipboardShapeView: NSView {
     let kind: Kind
     let body = FlippedView()
     private let material: NSView
-    private let tint = CAGradientLayer()
-    private let edge = CALayer()
+    /// Views, not bare layers: the glass is drawn over a layer of its parent's, and under a view added after it.
+    private let tint = ClipboardTintView()
+    private let edge = EdgeView()
 
     init(kind: Kind) {
         self.kind = kind
@@ -368,18 +371,17 @@ final class ClipboardShapeView: NSView {
         addSubview(material)
 
         let tints = kind == .pill ? ClipboardPanelMetrics.pillTint : ClipboardPanelMetrics.cardTint
-        tint.startPoint = CGPoint(x: 0.5, y: 1)      // the view is not flipped: y up, so 1 is the top
-        tint.endPoint = CGPoint(x: 0.5, y: 0)
-        tint.colors = [NSColor.black.withAlphaComponent(tints.top).cgColor, NSColor.black.withAlphaComponent(tints.bottom).cgColor]
-        layer?.addSublayer(tint)
+        tint.set(top: tints.top, bottom: tints.bottom)
+        addSubview(tint)
 
         addSubview(body)
 
-        edge.cornerRadius = r
-        edge.cornerCurve = .continuous
-        edge.borderWidth = 0.5
-        edge.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
-        layer?.addSublayer(edge)
+        edge.wantsLayer = true
+        edge.layer?.cornerRadius = r
+        edge.layer?.cornerCurve = .continuous
+        edge.layer?.borderWidth = 0.5
+        edge.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
+        addSubview(edge)
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -390,6 +392,27 @@ final class ClipboardShapeView: NSView {
         body.frame = bounds
         tint.frame = bounds
         edge.frame = bounds
+    }
+}
+
+/// Black over the glass, `top` opaque at the top edge and `bottom` at the bottom edge. It takes no clicks.
+final class ClipboardTintView: NSView {
+    override func makeBackingLayer() -> CALayer { CAGradientLayer() }
+    override var wantsUpdateLayer: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    func set(top: CGFloat, bottom: CGFloat) {
+        guard let gradient = layer as? CAGradientLayer else { return }
+        gradient.startPoint = CGPoint(x: 0.5, y: 1)      // the view is not flipped: y up, so 1 is the top
+        gradient.endPoint = CGPoint(x: 0.5, y: 0)
+        gradient.colors = [NSColor.black.withAlphaComponent(top).cgColor, NSColor.black.withAlphaComponent(bottom).cgColor]
     }
 }
 
@@ -594,9 +617,12 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
         super.layout()
         let w = bounds.width
         pill.frame = NSRect(x: 0, y: 0, width: w, height: M.pillHeight)
-        let fieldHeight: CGFloat = 30
+        // An editable field draws its text at the top of its frame, so the frame is as tall as the line and sits at the bar's middle.
+        let font = NSFont.systemFont(ofSize: M.searchFontSize, weight: .regular)
+        let fieldHeight = ceil(font.ascender - font.descender + font.leading)
         let rightSpace = M.accessoryCentreFromRight + M.accessorySize / 2 + 12
-        field.frame = NSRect(x: M.searchLeft - 4, y: (M.pillHeight - fieldHeight) / 2, width: w - M.searchLeft - rightSpace, height: fieldHeight)
+        field.frame = NSRect(x: M.searchLeft - 4, y: (M.pillHeight - fieldHeight) / 2 + M.searchTextDrop, width: w - M.searchLeft - rightSpace,
+                             height: fieldHeight)
         accessory.frame = NSRect(x: w - M.accessoryCentreFromRight - M.accessorySize / 2, y: (M.pillHeight - M.accessorySize) / 2,
                                  width: M.accessorySize, height: M.accessorySize)
 

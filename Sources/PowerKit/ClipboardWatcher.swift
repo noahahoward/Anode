@@ -78,6 +78,12 @@ public final class ClipboardWatcher {
             log("not recorded (too large or unreadable) from \(front.bundleID ?? "an unknown app")")
             return .skipped("too large or unreadable")
         }
+        // Something else was copied while this was read: what was read may be a mix of two copies, or a copy whose types were never
+        // checked. It is dropped, and the next look, which sees the new counter, takes the new copy from the start.
+        if changeCount() != count {
+            log("not recorded (the clipboard changed while it was read) from \(front.bundleID ?? "an unknown app")")
+            return .skipped("changed while it was read")
+        }
         let snapshot = ClipboardSnapshot(representations: reps, sourceBundleID: front.bundleID, sourceName: front.name, date: now)
         let result = store.add(snapshot, policy: rules)
         if case .skipped(let why) = result { log("not recorded (\(why)) from \(front.bundleID ?? "an unknown app")") }

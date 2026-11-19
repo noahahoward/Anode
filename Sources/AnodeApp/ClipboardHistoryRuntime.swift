@@ -24,6 +24,12 @@ enum ClipboardHistoryRuntime {
                 let app = NSWorkspace.shared.frontmostApplication
                 return (app?.bundleIdentifier, app?.localizedName)
             },
+            // Who made a copy: the app it says (when it says), else the app in front. Not the same as the app to paste into.
+            copySource: {
+                if let id = RealClipboard.declaredSource() { return (id, ClipboardAppNames.name(for: id)) }
+                let app = NSWorkspace.shared.frontmostApplication
+                return (app?.bundleIdentifier, app?.localizedName)
+            },
             restoreFront: { bringBack($0) },
             startTimer: { interval, tolerance, tick in
                 let timer = Timer(timeInterval: interval, repeats: true) { _ in tick() }

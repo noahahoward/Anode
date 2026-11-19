@@ -40,6 +40,11 @@ enum RealClipboard {
         var total = 0
         for (index, item) in items.prefix(maxItems).enumerated() {
             // Words and links first, pictures last: a big picture is the only form that can be large.
+            // A marker is read as its presence only (no data): the store checks the types it is given again, and what was copied between
+            // the watcher's look at the types and this read must not slip past it.
+            for type in item.types where ClipboardPrivacy.markers[type.rawValue] != nil || ClipboardTypes.isMarker(type.rawValue) {
+                out.append(ClipboardRepresentation(item: index, type: type.rawValue, data: Data()))
+            }
             let kept = item.types.filter { ClipboardTypes.essential.contains($0.rawValue) }
             let wanted = kept.filter { !ClipboardTypes.images.contains($0.rawValue) } + kept.filter { ClipboardTypes.images.contains($0.rawValue) }
             for type in wanted {
@@ -50,6 +55,13 @@ enum RealClipboard {
             }
         }
         return out.isEmpty ? nil : out
+    }
+
+    /// The app a copy says it came from (`org.nspasteboard.source`, which many apps and every well-made clipboard tool set), when it says.
+    static func declaredSource() -> String? {
+        guard let id = NSPasteboard.general.string(forType: NSPasteboard.PasteboardType("org.nspasteboard.source")), !id.isEmpty,
+              id.count < 256 else { return nil }
+        return id
     }
 
     /// Puts an entry back on the pasteboard, as it was copied. With `plainTextOnly` and a plain text form among them, only
