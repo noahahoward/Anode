@@ -1797,7 +1797,10 @@ run_data_uninstall() {
 }
 left_in_home() {   # left_in_home HOME: what is in it besides the folders a Mac's home has anyway (empty)
   ( cd "$1" && find . -mindepth 1 \( -type f -o -type l \) ! -path './Library/Keychains/.fl*' | sort
-    find . -mindepth 1 -type d -empty | grep -vE '^\./(Applications|Library(/(Keychains|Logs|Caches|Preferences|Application Support|LaunchAgents))?)$' | sort )
+    # An empty Application Support/CrashReporter is macOS's own: it makes it in whatever home a tool crashes in (Xcode's ibtoold
+    # aborts now and then during the build in the test's home, "Couldn't connect to launchservicesd"). Anode's crash records in
+    # it are files, which this still lists; only the empty folder is left out.
+    find . -mindepth 1 -type d -empty | grep -vE '^\./(Applications|Library(/(Keychains|Logs|Caches|Preferences|Application Support|LaunchAgents))?|Library/Application Support/CrashReporter)$' | sort )
 }
 if [ "$FULL" = 1 ]; then
   echo "7. A REAL install (compiles the app), then the installed app's own Uninstall button, in a folder next to the checkout"

@@ -18,6 +18,11 @@ import Foundation
 /// process exiting. Seconds are stored relative to the moment of admission, because a Float32 of raw awake seconds loses
 /// sub-second precision after weeks of uptime.
 ///
+/// CPU. Every reading carries the process's CPU time (`Reading`/`Seen`'s `cpuNanos`, from the same rusage call, so it
+/// costs nothing) and both trackers are given it. The fast tracker does not judge a window in which the process averaged
+/// `GrowthRules.maxBusyFraction` of a core or more (growth while busy is work, not a leak); the slow tracker's rules never
+/// gate on it, and only use it to say how busy the process was on average.
+///
 /// THE SLOW TIER. The same entry holds a second tracker, driven by `GrowthRules.slow` (two-hour window), and a small ring
 /// of the last `slowRingCapacity` slow points (48 x 8 bytes, about four hours). It is NOT fed on every tick: each entry
 /// keeps `nextSlowAt`, and a tick costs the entry one comparison `awake >= nextSlowAt`. Only when that passes (once per
@@ -27,10 +32,11 @@ import Foundation
 /// is one finding.
 public final class MemoryWatch {
 
-    /// What reading one process gives: its start time (pid reuse) and its footprint.
-    public typealias Reading = (start: UInt64, footprint: UInt64)
+    /// What reading one process gives: its start time (pid reuse), its footprint and its total CPU time so far (user plus
+    /// system, real nanoseconds, a counter that only goes up), all from the one `proc_pid_rusage` call.
+    public typealias Reading = (start: UInt64, footprint: UInt64, cpuNanos: UInt64)
     /// One process in a discovery pass.
-    public typealias Seen = (pid: pid_t, start: UInt64, footprint: UInt64)
+    public typealias Seen = (pid: pid_t, start: UInt64, footprint: UInt64, cpuNanos: UInt64)
 
     /// Points kept per candidate for its graph: about 6 minutes at 2 s, about 25 minutes at 8 s.
     public static let ringCapacity = 192
@@ -96,7 +102,7 @@ public final class MemoryWatch {
     ///   - pathOf: a process's executable path. Called once per process lifetime at most, for a process that qualifies
     ///     for the table (admitted, ignored or excluded alike), and never by a light tick or a footprint-only pass.
     ///   - isIgnored: whether the person asked not to be warned about this identity key (`IdentityKey`).
-    ///   - footprintOf: one process's start time and footprint, nil when it is gone or unreadable.
+    ///   - footprintOf: one process's start time, footprint and CPU time, nil when it is gone or unreadable.
     ///   - discover: every readable process, for a footprint-only discovery pass (no paths, no names).
     ///   - startSeconds: a process's start time (`ri_proc_start_abstime`) on the awake clock, so its age is `awake` minus
     ///     this. The default converts mach absolute time units, which are the units `awakeSeconds()` counts in.
@@ -243,6 +249,8 @@ public final class MemoryWatch {
     fileprivate struct Observed {
         let key: ProcessKey
         let footprint: UInt64
+        /// Total CPU time so far in nanoseconds: the first reading of a candidate's CPU baseline.
+        let cpuNanos: UInt64
         let path: String
     }
 
@@ -298,7 +306,7 @@ public final class MemoryWatch {
         scratchKeys.removeAll(keepingCapacity: true)
         for entry in table.values {
             if let p = sweep.processes[entry.key] {
-                feed(entry, bytes: p.footprint, awake: awake, wall: sweep.timestamp)
+                feed(entry, bytes: p.footprint, cpuNanos: p.cpuNanos, awake: awake, wall: sweep.timestamp)
             } else {
                 scratchKeys.append(entry.key)       // gone, or its pid was reused (a different key)
             }
@@ -308,7 +316,7 @@ public final class MemoryWatch {
         if let last = lastDiscoveryAwake, awake - last < rules.sweepDiscoveryIntervalSeconds { return }
         observedScratch.removeAll(keepingCapacity: true)
         for (key, p) in sweep.processes {
-            observedScratch.append(Observed(key: key, footprint: p.footprint, path: p.path))
+            observedScratch.append(Observed(key: key, footprint: p.footprint, cpuNanos: p.cpuNanos, path: p.path))
         }
         discovery(observedScratch, awake: awake, wall: sweep.timestamp)
         observedScratch.removeAll(keepingCapacity: true)
@@ -323,7 +331,7 @@ public final class MemoryWatch {
             scratchKeys.removeAll(keepingCapacity: true)
             for entry in table.values {
                 if let r = footprintOf(entry.key.pid), r.start == entry.key.startAbsTime {
-                    feed(entry, bytes: r.footprint, awake: awake, wall: wall)
+                    feed(entry, bytes: r.footprint, cpuNanos: r.cpuNanos, awake: awake, wall: wall)
                 } else {
                     scratchKeys.append(entry.key)   // exited, unreadable, or the pid now belongs to another process
                 }
@@ -339,7 +347,8 @@ public final class MemoryWatch {
         var observed: [Observed] = []
         observed.reserveCapacity(found.count)
         for f in found {
-            observed.append(Observed(key: ProcessKey(pid: f.pid, startAbsTime: f.start), footprint: f.footprint, path: ""))
+            observed.append(Observed(key: ProcessKey(pid: f.pid, startAbsTime: f.start), footprint: f.footprint,
+                                     cpuNanos: f.cpuNanos, path: ""))
         }
         discovery(observed, awake: awake, wall: wall)
     }
@@ -469,7 +478,7 @@ public final class MemoryWatch {
         }
     }
 
-    private func feed(_ e: Entry, bytes: UInt64, awake: Double, wall: Date) {
+    private func feed(_ e: Entry, bytes: UInt64, cpuNanos: UInt64, awake: Double, wall: Date) {
         e.lastBytes = bytes
         e.append(Slot(offset: Float(awake - e.origin), kib: UInt32(clamping: bytes >> 10)))
         let moved = bytes > e.flatRef ? bytes - e.flatRef : e.flatRef - bytes
@@ -479,23 +488,23 @@ public final class MemoryWatch {
         }
         if detectsLeaks {
             let age = max(0, awake - startSeconds(e.key.startAbsTime))
-            if let verdict = e.tracker.ingest(bytes: bytes, at: awake, processAge: age, rules: rules) {
+            if let verdict = e.tracker.ingest(bytes: bytes, at: awake, cpuNanos: cpuNanos, processAge: age, rules: rules) {
                 raise(e, verdict, tier: .fast, awake: awake, wall: wall)
             }
             // The slow tier costs this one comparison per tick; the rest happens once per `slowFeedIntervalSeconds`.
-            if awake >= e.nextSlowAt { feedSlow(e, bytes: bytes, awake: awake, age: age, wall: wall) }
+            if awake >= e.nextSlowAt { feedSlow(e, bytes: bytes, cpuNanos: cpuNanos, awake: awake, age: age, wall: wall) }
         }
         if !liveKeys.isEmpty, liveKeys.contains(e.key), let post = onLivePoint {
             post(e.key, MemorySample(seconds: awake, bytes: bytes))
         }
     }
 
-    private func feedSlow(_ e: Entry, bytes: UInt64, awake: Double, age: Double, wall: Date) {
+    private func feedSlow(_ e: Entry, bytes: UInt64, cpuNanos: UInt64, awake: Double, age: Double, wall: Date) {
         e.nextSlowAt = awake + slowRules.slowFeedIntervalSeconds
         e.slowFeeds += 1
         slowFeedTotal += 1
         e.appendSlow(Slot(offset: Float(awake - e.origin), kib: UInt32(clamping: bytes >> 10)))
-        if let verdict = e.slowTracker.ingest(bytes: bytes, at: awake, processAge: age, rules: slowRules) {
+        if let verdict = e.slowTracker.ingest(bytes: bytes, at: awake, cpuNanos: cpuNanos, processAge: age, rules: slowRules) {
             raise(e, verdict, tier: .slow, awake: awake, wall: wall)
         }
     }
@@ -535,7 +544,8 @@ public final class MemoryWatch {
                           largestDipBytes: v.largestDipBytes,
                           history: tier == .slow ? e.slowSamples() : e.fastSamples(),
                           shouldNotify: notify,
-                          tier: tier))
+                          tier: tier,
+                          cpuFraction: v.cpuFraction))
     }
 
     // MARK: High-memory warning
@@ -576,7 +586,7 @@ public final class MemoryWatch {
                 guard lookups < pressureRules.maxPathLookups else { continue }
                 lookups += 1
             }
-            let id = identity(of: Observed(key: key, footprint: s.footprint, path: ""))
+            let id = identity(of: Observed(key: key, footprint: s.footprint, cpuNanos: s.cpuNanos, path: ""))
             if id.blocked || ignoredKeys.contains(id.key) || isIgnored(id.key) { continue }
             // Sorted largest first, so the first process of a group is its biggest.
             if groups[id.key] != nil {
@@ -716,7 +726,7 @@ public final class MemoryWatch {
             let entry = Entry(key: c.observed.key, identity: id, origin: awake,
                               bytes: c.observed.footprint, rank: c.rank, slowCapacity: slowRules.slowRingCapacity)
             table[entry.key] = entry
-            feed(entry, bytes: c.observed.footprint, awake: awake, wall: wall)
+            feed(entry, bytes: c.observed.footprint, cpuNanos: c.observed.cpuNanos, awake: awake, wall: wall)
         }
     }
 

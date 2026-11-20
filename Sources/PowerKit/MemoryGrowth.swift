@@ -44,6 +44,12 @@ public struct GrowthRules: Equatable {
     public var minProcessAgeSeconds: Double = 180
     /// After a sleep or a suspension every window starts again, and nothing is flagged for this long.
     public var quietAfterGapSeconds: Double = 120
+    /// Growth while a process is busy is expected (a long test run streaming output, an export, a build), and growth while
+    /// it is nearly idle is the high-confidence leak signature. A window whose average CPU use was at least this share of
+    /// ONE core (0.25 is a quarter of a core, may exceed 1 for several threads) is not judged; the window slides and is
+    /// judged again at the next hop. Unknown CPU never gates. The slow tier sets this to infinity: a leaking app that is
+    /// used all day is busy, and it still has to be found, slowly.
+    public var maxBusyFraction: Double = 0.25
 
     /// What counts as a sample having risen at all (informational: it feeds the explanation, never a verdict).
     public var risingEpsilonMinBytes: UInt64 = 256 << 10
@@ -95,6 +101,7 @@ public struct GrowthRules: Equatable {
         r.dipToleranceMinBytes = 32 << 20
         r.slowFeedIntervalSeconds = 300
         r.slowRingCapacity = 48
+        r.maxBusyFraction = .infinity
         return r
     }()
 }
@@ -130,6 +137,9 @@ public struct GrowthVerdict: Equatable {
     /// An upper bound on how far memory ever fell back from its high-water mark inside the window.
     public let largestDipBytes: UInt64
     public let largestStepBytes: UInt64
+    /// The CPU the process used over the window, as a share of ONE core (0.8 is 80 %, may exceed 1). Nil when the CPU
+    /// time was not handed in, or not for the whole window.
+    public let cpuFraction: Double?
 
     public var netGrowthBytes: UInt64 { nowBytes > startBytes ? nowBytes - startBytes : 0 }
 }
@@ -157,18 +167,23 @@ public struct GrowthTracker {
         case quiet
     }
 
-    /// One slice of the window. 32 bytes.
+    /// One slice of the window. 40 bytes.
     private struct Bucket {
         var end: UInt64
         var peak: UInt64
         var endTime: Double
         /// The largest single rise between two samples, in KiB.
         var largestStepKiB: UInt32
+        /// CPU time used while this bucket was filling, in milliseconds (the sum of the sample-to-sample rises).
+        var cpuMs: UInt32
         var rising: UInt8
         var samples: UInt8
+        /// How many of `samples` came with a CPU time to take a rise from. The bucket's `cpuMs` is the whole truth only
+        /// when this equals `samples`.
+        var cpuSeen: UInt8
 
         static func opening(at bytes: UInt64, _ t: Double) -> Bucket {
-            Bucket(end: bytes, peak: bytes, endTime: t, largestStepKiB: 0, rising: 0, samples: 0)
+            Bucket(end: bytes, peak: bytes, endTime: t, largestStepKiB: 0, cpuMs: 0, rising: 0, samples: 0, cpuSeen: 0)
         }
     }
 
@@ -191,6 +206,10 @@ public struct GrowthTracker {
     private var cur: UInt8 = 0
     private var closed: UInt8 = 0
     private var hasWindow = false
+    /// The process's CPU time (nanoseconds) at the previous sample, and whether there is one. The next sample's CPU time
+    /// less this is what it adds to its bucket; a CPU time that went DOWN (a reused pid, a counter reset) adds nothing.
+    private var lastCPU: UInt64 = 0
+    private var hasLastCPU = false
     public private(set) var phase: Phase = .learning
 
     public init() {}
@@ -220,10 +239,13 @@ public struct GrowthTracker {
     /// - Parameters:
     ///   - bytes: the process's footprint.
     ///   - t: awake seconds, never going backwards.
+    ///   - cpuNanos: the process's total CPU time so far (user plus system) in nanoseconds, a counter that only goes up.
+    ///     Nil when unknown, and then nothing is gated on CPU. A window whose average use was at least
+    ///     `rules.maxBusyFraction` of one core is not judged: the work explains the growth.
     ///   - processAge: awake seconds since the process started.
     ///   - rules: every threshold; `.standard` unless a test says otherwise.
     @discardableResult
-    public mutating func ingest(bytes: UInt64, at t: TimeInterval, processAge: TimeInterval,
+    public mutating func ingest(bytes: UInt64, at t: TimeInterval, cpuNanos: UInt64? = nil, processAge: TimeInterval,
                                 rules: GrowthRules = .standard) -> GrowthVerdict? {
         switch phase {
         case .reported:
@@ -237,13 +259,13 @@ public struct GrowthTracker {
         }
 
         guard hasWindow else {
-            startWindow(bytes: bytes, at: t, cadence: 0, rules: rules)
+            startWindow(bytes: bytes, at: t, cpuNanos: cpuNanos, cadence: 0, rules: rules)
             return nil
         }
         var open = bucket(Int(cur))
         guard t >= open.endTime else {
             // Time went backwards. Trust nothing measured across it.
-            startWindow(bytes: bytes, at: t, cadence: 0, rules: rules)
+            startWindow(bytes: bytes, at: t, cpuNanos: cpuNanos, cadence: 0, rules: rules)
             return nil
         }
         let delta = t - open.endTime
@@ -254,7 +276,7 @@ public struct GrowthTracker {
             let dip = Self.diff(highWater, bytes)
             let growth = Self.diff(highWater, anchorBytes)
             if dip > Self.dipTolerance(anchor: anchorBytes, growth: growth, rules: rules) {
-                startWindow(bytes: bytes, at: t, cadence: delta, rules: rules)
+                startWindow(bytes: bytes, at: t, cpuNanos: cpuNanos, cadence: delta, rules: rules)
                 return nil
             }
             if dip > deepestDip { deepestDip = dip }
@@ -272,6 +294,16 @@ public struct GrowthTracker {
             if step > Self.risingEpsilon(at: previous, rules: rules), open.rising < UInt8.max { open.rising += 1 }
             let kib = UInt32(clamping: step >> 10)
             if kib > open.largestStepKiB { open.largestStepKiB = kib }
+        }
+        if let cpu = cpuNanos {
+            if hasLastCPU {
+                let rise = cpu > lastCPU ? cpu - lastCPU : 0
+                let ms = rise / 1_000_000 + (rise % 1_000_000 >= 500_000 ? 1 : 0)
+                open.cpuMs = UInt32(clamping: UInt64(open.cpuMs) + ms)
+                if open.cpuSeen < UInt8.max { open.cpuSeen += 1 }
+            }
+            lastCPU = cpu
+            hasLastCPU = true
         }
         setBucket(Int(cur), open)
 
@@ -328,6 +360,8 @@ public struct GrowthTracker {
         var step: UInt32 = 0
         var rising = 0
         var samples = 0
+        var cpuMs: UInt64 = 0
+        var cpuSeen = 0
         for i in 0..<4 {
             let b = bucket((oldest + i) & 3)
             guard b.end > from else { return nil }
@@ -336,9 +370,20 @@ public struct GrowthTracker {
             if b.largestStepKiB > step { step = b.largestStepKiB }
             rising += Int(b.rising)
             samples += Int(b.samples)
+            cpuMs += UInt64(b.cpuMs)
+            cpuSeen += Int(b.cpuSeen)
         }
         let largestStep = UInt64(step) << 10
         guard Double(largestStep) <= rules.maxLargestStepShare * netD else { return nil }
+
+        // How busy the process was over the window, as a share of one core. Known only when every sample of it came with a
+        // CPU time. A busy window is not judged (the caller slides it and tries again at the next hop).
+        var cpuFraction: Double?
+        if samples > 0, cpuSeen == samples, elapsed > 0 {
+            let fraction = Double(cpuMs) / 1000 / elapsed
+            if fraction >= rules.maxBusyFraction { return nil }
+            cpuFraction = fraction
+        }
 
         return GrowthVerdict(startBytes: anchorBytes,
                              nowBytes: bytes,
@@ -347,12 +392,16 @@ public struct GrowthTracker {
                              risingSamples: rising,
                              totalSamples: samples,
                              largestDipBytes: deepestDip,
-                             largestStepBytes: largestStep)
+                             largestStepBytes: largestStep,
+                             cpuFraction: cpuFraction)
     }
 
     // MARK: Window
 
-    private mutating func startWindow(bytes: UInt64, at t: Double, cadence: Double, rules: GrowthRules) {
+    private mutating func startWindow(bytes: UInt64, at t: Double, cpuNanos: UInt64?, cadence: Double,
+                                      rules: GrowthRules) {
+        lastCPU = cpuNanos ?? 0
+        hasLastCPU = cpuNanos != nil
         anchorBytes = bytes
         anchorTime = t
         highWater = bytes
@@ -440,6 +489,9 @@ public struct Finding: Equatable {
     public var reason: PressureReason?
     /// A pressure finding's largest apps, biggest first (the finding's own app is the first); empty for a leak finding.
     public var topApps: [PressureApp]
+    /// The CPU the process used while its memory grew, as a share of ONE core (0.03 is 3 %; may exceed 1). A fast finding's
+    /// is over the window, a slow finding's over its hours. Nil when it was not known, and for a pressure finding.
+    public var cpuFraction: Double?
 
     public init(processKey: ProcessKey, pid: pid_t, name: String, path: String, identityKey: String, isApp: Bool,
                 startBytes: UInt64, nowBytes: UInt64, netGrowthBytes: UInt64,
@@ -447,7 +499,8 @@ public struct Finding: Equatable {
                 flaggedAtWall: Date, flaggedAtAwake: Double,
                 risingSamples: Int, totalSamples: Int, largestDipBytes: UInt64,
                 history: [MemorySample], shouldNotify: Bool, tier: GrowthTier = .fast,
-                system: SystemMemoryReading? = nil, reason: PressureReason? = nil, topApps: [PressureApp] = []) {
+                system: SystemMemoryReading? = nil, reason: PressureReason? = nil, topApps: [PressureApp] = [],
+                cpuFraction: Double? = nil) {
         self.processKey = processKey
         self.pid = pid
         self.name = name
@@ -470,6 +523,7 @@ public struct Finding: Equatable {
         self.system = system
         self.reason = reason
         self.topApps = topApps
+        self.cpuFraction = cpuFraction
     }
 
     /// Bytes per second over the window.
@@ -497,14 +551,26 @@ public struct Finding: Equatable {
         case .slow:
             let span = DurationText.approximate(seconds: windowSeconds)
             let stretch = DurationText.text(seconds: bucketSeconds)
-            return "Its memory rose steadily for about \(span), grew in every stretch of \(stretch), and \(fell). "
+            let base = "Its memory rose steadily for about \(span), grew in every stretch of \(stretch), and \(fell). "
                 + "Long sessions and apps that keep opening things look similar, so Anode can only say \"possible\"."
+            guard let share = coreShareText else { return base }
+            return base + " It averaged \(share) of a core over that time."
         default:
             let rose = "Its memory rose in \(risingSamples) of \(totalSamples) samples"
             let stretch = "grew steadily in every \(Int(bucketSeconds.rounded()))-second stretch"
-            return "\(rose), \(stretch), and \(fell). Leaks look like this, but so do large exports and cache fills, "
+            let base = "\(rose), \(stretch), and \(fell). Leaks look like this, but so do large exports and cache fills, "
                 + "so Anode can only say \"possible\"."
+            guard let share = coreShareText else { return base }
+            return base + " It used \(share) of a core while its memory grew, so work it was doing does not explain the growth."
         }
+    }
+
+    /// How much of one core the process used, in words for the explanation: "about 3%", or "under 1%" below one percent.
+    /// Nil when the CPU was not known (or is not a number).
+    private var coreShareText: String? {
+        guard let fraction = cpuFraction, fraction.isFinite, fraction >= 0 else { return nil }
+        let percent = fraction * 100
+        return percent < 1 ? "under 1%" : "about \(Int(min(percent, 1_000_000).rounded()))%"
     }
 
     /// The notification's text. The duration is the window actually measured, never a hard-coded "last minute".

@@ -118,7 +118,8 @@ final class MemoryWatchQuitter: MemoryWatchQuitting {
     private let runOffMain: (@escaping () -> Void) -> Void
     private let runOnMain: (@escaping () -> Void) -> Void
 
-    init(probe: @escaping (pid_t) -> Reading? = { ProcessSampler.footprint(of: $0) },
+    init(probe: @escaping (pid_t) -> Reading? = { pid in
+             ProcessSampler.footprint(of: pid).map { (start: $0.start, footprint: $0.footprint) } },
          allPIDs: @escaping () -> [pid_t] = { ProcessSampler.allPIDs() },
          pathOf: @escaping (pid_t) -> String = { ProcessSampler.path(of: $0) },
          candidates: @escaping ([pid_t]) -> [ProcessActions.Candidate] = { ProcessActions.candidates(pids: $0) },

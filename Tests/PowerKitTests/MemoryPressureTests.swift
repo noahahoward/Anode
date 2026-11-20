@@ -382,6 +382,7 @@ private final class PressureMachine {
         var start: UInt64
         var footprint: UInt64
         var path: String
+        var cpuNanos: UInt64 = 0
     }
 
     var procs: [pid_t: Proc] = [:]
@@ -395,12 +396,13 @@ private final class PressureMachine {
         pathReads += 1
         return procs[pid]?.path ?? ""
     }
-    func footprintOf(_ pid: pid_t) -> (start: UInt64, footprint: UInt64)? {
+    func footprintOf(_ pid: pid_t) -> (start: UInt64, footprint: UInt64, cpuNanos: UInt64)? {
         guard let p = procs[pid] else { return nil }
-        return (start: p.start, footprint: p.footprint)
+        return (start: p.start, footprint: p.footprint, cpuNanos: p.cpuNanos)
     }
-    func discover() -> [(pid: pid_t, start: UInt64, footprint: UInt64)] {
-        procs.map { (pid: $0.key, start: $0.value.start, footprint: $0.value.footprint) }.sorted { $0.pid < $1.pid }
+    func discover() -> [(pid: pid_t, start: UInt64, footprint: UInt64, cpuNanos: UInt64)] {
+        procs.map { (pid: $0.key, start: $0.value.start, footprint: $0.value.footprint, cpuNanos: $0.value.cpuNanos) }
+            .sorted { $0.pid < $1.pid }
     }
 }
 

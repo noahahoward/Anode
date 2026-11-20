@@ -238,6 +238,11 @@ final class MainWindowController: NSObject {
             if spec.id != "name" { c.headerCell.alignment = .right }
             table.addTableColumn(c)
         }
+        // The "Possible Memory Leak" badge column, hidden until a row needs it. Like the
+        // spacer it is not in the column list: no sort, no header tooltip, not sized.
+        let leak = LeakBadge.makeColumn()
+        leak.isHidden = !leakColumnShown
+        table.addTableColumn(leak)
         // Trailing slack absorber, always last. Not part of the column list because
         // it holds no data and must never be sortable.
         let spacer = NSTableColumn(identifier: .init(ProcessColumns.spacerID))
@@ -252,6 +257,23 @@ final class MainWindowController: NSObject {
             table.sortDescriptors = [sort]
         }
         refreshSortIndicators()
+    }
+
+    /// Which rows carry a "Possible Memory Leak" badge; worked out on the table's own refresh.
+    let leakBadges = LeakBadgeTracker()
+    /// Whether the badge column is showing now, so it is only touched when the answer changes.
+    private(set) var leakColumnShown = false
+
+    /// Re-evaluates the badges for `rows` and shows the badge column only while some row has one.
+    func updateLeakBadges(rows: [Row]) {
+        setLeakColumn(visible: leakBadges.update(rows: rows))
+    }
+
+    func setLeakColumn(visible: Bool) {
+        guard visible != leakColumnShown else { return }
+        leakColumnShown = visible
+        table.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(LeakBadge.columnID))?.isHidden = !visible
+        table.sizeLastColumnToFit()
     }
 
     /// Widen a data column, taking the width out of the trailing spacer.

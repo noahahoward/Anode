@@ -76,6 +76,10 @@ final class Row: NSObject {
     /// footprint — a coalition row has none.
     let memoryPercent: Double?
 
+    /// The Memory Watch leak finding this row shows a badge for, set on the table's refresh (`LeakBadgeTracker`). nil for
+    /// almost every row.
+    var leakFinding: Finding?
+
     /// True when NOTHING in this row was measured per-process: it is a named share
     /// of a bucket. Drives the name's colour, as it always has.
     var isModeled: Bool { app == nil }

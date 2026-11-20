@@ -40,6 +40,10 @@ public struct ProcessEnergy {
     public let diskWritten: UInt64
 
     public var key: ProcessKey { ProcessKey(pid: pid, startAbsTime: startAbsTime) }
+
+    /// User plus system CPU time since the process started, in real nanoseconds. The two `_ns` fields above hold mach
+    /// absolute time units (`MachTime`), so this converts; it is what `footprint(of:)` returns as `cpuNanos`.
+    public var cpuNanos: UInt64 { MachTime.nanoseconds(units: userTime_ns &+ systemTime_ns) }
 }
 
 public struct ProcessKey: Hashable {
@@ -237,13 +241,17 @@ public enum ProcessSampler {
         )
     }
 
-    /// Start time and physical footprint of one process: a single `proc_pid_rusage` call and nothing else (no
-    /// path, no name, no allocation beyond the stack struct). Memory Watch re-reads a few dozen processes on each
-    /// light tick with this, and the start time it returns is the pid-reuse check at no extra cost.
+    /// Start time, physical footprint and total CPU time of one process: a single `proc_pid_rusage` call and nothing
+    /// else (no path, no name, no allocation beyond the stack struct). Memory Watch re-reads a few dozen processes on
+    /// each light tick with this, and the start time it returns is the pid-reuse check at no extra cost.
+    ///
+    /// `cpuNanos` is user plus system CPU time since the process started, in REAL nanoseconds. The rusage counters are
+    /// mach absolute time units (see `MachTime`), converted here with one multiplication, so every consumer can take the
+    /// number at face value.
     ///
     /// Same flavour as `energy(of:)` (V6), the one known to be valid on every macOS this app runs on. Returns nil on
     /// EPERM (another user's process) or when the process has exited.
-    public static func footprint(of pid: pid_t) -> (start: UInt64, footprint: UInt64)? {
+    public static func footprint(of pid: pid_t) -> (start: UInt64, footprint: UInt64, cpuNanos: UInt64)? {
         var info = rusage_info_v6()
         let rc = withUnsafeMutablePointer(to: &info) { ptr -> Int32 in
             ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
@@ -251,18 +259,21 @@ public enum ProcessSampler {
             }
         }
         guard rc == 0 else { return nil }
-        return (info.ri_proc_start_abstime, info.ri_phys_footprint)
+        return (info.ri_proc_start_abstime, info.ri_phys_footprint,
+                MachTime.nanoseconds(units: info.ri_user_time &+ info.ri_system_time))
     }
 
-    /// Every readable process's start time and footprint, with NO `proc_pidpath` and no name lookup: `proc_listpids`
-    /// plus the one rusage call each. This is Memory Watch's discovery pass when no full sweep has happened for a
-    /// while; it costs a fraction of `sweep(reusing:)`.
-    public static func footprints() -> [(pid: pid_t, start: UInt64, footprint: UInt64)] {
+    /// Every readable process's start time, footprint and CPU time (real nanoseconds), with NO `proc_pidpath` and no
+    /// name lookup: `proc_listpids` plus the one rusage call each. This is Memory Watch's discovery pass when no full
+    /// sweep has happened for a while; it costs a fraction of `sweep(reusing:)`.
+    public static func footprints() -> [(pid: pid_t, start: UInt64, footprint: UInt64, cpuNanos: UInt64)] {
         let pids = allPIDs()
-        var out: [(pid: pid_t, start: UInt64, footprint: UInt64)] = []
+        var out: [(pid: pid_t, start: UInt64, footprint: UInt64, cpuNanos: UInt64)] = []
         out.reserveCapacity(pids.count)
         for pid in pids {
-            if let f = footprint(of: pid) { out.append((pid: pid, start: f.start, footprint: f.footprint)) }
+            if let f = footprint(of: pid) {
+                out.append((pid: pid, start: f.start, footprint: f.footprint, cpuNanos: f.cpuNanos))
+            }
         }
         return out
     }

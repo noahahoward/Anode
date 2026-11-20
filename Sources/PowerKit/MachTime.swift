@@ -36,6 +36,13 @@ public enum MachTime {
         Double(units) * nanosPerUnit / 1e9
     }
 
+    /// Real nanoseconds for an amount of mach absolute time units (saturating, never traps). Memory Watch's CPU figure is
+    /// in true nanoseconds, so it converts the rusage counters with this at the one place it reads them.
+    public static func nanoseconds(units: UInt64) -> UInt64 {
+        let ns = Double(units) * nanosPerUnit
+        return ns < Double(UInt64.max) ? UInt64(ns) : UInt64.max
+    }
+
     /// Percent of ONE core, Activity Monitor's convention: a fully busy
     /// four-thread process reads 400%, not 100%.
     ///
