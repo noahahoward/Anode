@@ -116,6 +116,12 @@ public final class Settings {
         public static let clipboardHistoryMaxEntries = "clipboardHistoryMaxEntries"
         public static let clipboardHistoryKeepImages = "clipboardHistoryKeepImages"
         public static let clipboardHistoryIgnoredApps = "clipboardHistoryIgnoredApps"
+        /// Memory Watch: the switch, and the identity keys (an app's bundle path, or a tool's executable path) the person
+        /// asked not to be warned about.
+        public static let memoryWatchEnabled = "memoryWatchEnabled"
+        public static let memoryWatchIgnoredApps = "memoryWatchIgnoredApps"
+        /// Memory Watch: also warn when the whole Mac is running low on memory (not only when one app leaks).
+        public static let memoryWatchPressureWarning = "memoryWatchPressureWarning"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -283,6 +289,10 @@ public final class Settings {
         static let clipboardHistoryKeepMinutes = 1440
         static let clipboardHistoryMaxEntries = 500
         static let clipboardHistoryKeepImages = true
+        /// OFF: it reads other processes' memory on every tick and posts notifications, so the person turns it on.
+        static let memoryWatchEnabled = false
+        /// OFF: one more system read per tick while Memory Watch is on, so the person turns it on.
+        static let memoryWatchPressureWarning = false
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -410,6 +420,9 @@ public final class Settings {
         var clipboardHistoryMaxEntries: Int
         var clipboardHistoryKeepImages: Bool
         var clipboardHistoryIgnoredApps: [String]
+        var memoryWatchEnabled: Bool
+        var memoryWatchIgnoredApps: [String]
+        var memoryWatchPressureWarning: Bool
     }
     private var snapshot: Values
     private var defaultsObserver: NSObjectProtocol?
@@ -1254,6 +1267,26 @@ public final class Settings {
         set { writeIDList(newValue, key: Key.clipboardHistoryIgnoredApps, keyPath: \.clipboardHistoryIgnoredApps) }
     }
 
+    /// Whether Memory Watch looks for apps whose memory keeps growing and says so in a notification (Beta Features). Off
+    /// until asked for.
+    public var memoryWatchEnabled: Bool {
+        get { Settings.readBool(defaults, Key.memoryWatchEnabled, Default.memoryWatchEnabled) }
+        set { writeBool(Key.memoryWatchEnabled, \.memoryWatchEnabled, newValue, Default.memoryWatchEnabled) }
+    }
+
+    /// Identity keys (an app's outermost bundle path, or a tool's executable path) Memory Watch never warns about.
+    public var memoryWatchIgnoredApps: [String] {
+        get { Settings.readIDList(defaults, Key.memoryWatchIgnoredApps) }
+        set { writeIDList(newValue, key: Key.memoryWatchIgnoredApps, keyPath: \.memoryWatchIgnoredApps) }
+    }
+
+    /// Whether Memory Watch also warns when the whole Mac is low on memory (high memory pressure, a lot of swap, or one app
+    /// holding half of the RAM). Off until asked for; only has an effect while `memoryWatchEnabled` is on.
+    public var memoryWatchPressureWarning: Bool {
+        get { Settings.readBool(defaults, Key.memoryWatchPressureWarning, Default.memoryWatchPressureWarning) }
+        set { writeBool(Key.memoryWatchPressureWarning, \.memoryWatchPressureWarning, newValue, Default.memoryWatchPressureWarning) }
+    }
+
     private static func readAlwaysKeep(_ d: UserDefaults) -> [String] {
         guard let text = d.string(forKey: storageKey(Key.ultraLowPowerAlwaysKeep)),
               let data = text.data(using: .utf8),
@@ -1527,6 +1560,9 @@ public final class Settings {
         if old.clipboardHistoryMaxEntries != now.clipboardHistoryMaxEntries { notify(Key.clipboardHistoryMaxEntries) }
         if old.clipboardHistoryKeepImages != now.clipboardHistoryKeepImages { notify(Key.clipboardHistoryKeepImages) }
         if old.clipboardHistoryIgnoredApps != now.clipboardHistoryIgnoredApps { notify(Key.clipboardHistoryIgnoredApps) }
+        if old.memoryWatchEnabled != now.memoryWatchEnabled { notify(Key.memoryWatchEnabled) }
+        if old.memoryWatchIgnoredApps != now.memoryWatchIgnoredApps { notify(Key.memoryWatchIgnoredApps) }
+        if old.memoryWatchPressureWarning != now.memoryWatchPressureWarning { notify(Key.memoryWatchPressureWarning) }
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────
@@ -1747,7 +1783,10 @@ public final class Settings {
                clipboardHistoryMaxEntries: readInt(d, Key.clipboardHistoryMaxEntries, Default.clipboardHistoryMaxEntries,
                                                    clipboardHistoryMaxEntriesRange),
                clipboardHistoryKeepImages: readBool(d, Key.clipboardHistoryKeepImages, Default.clipboardHistoryKeepImages),
-               clipboardHistoryIgnoredApps: readIDList(d, Key.clipboardHistoryIgnoredApps))
+               clipboardHistoryIgnoredApps: readIDList(d, Key.clipboardHistoryIgnoredApps),
+               memoryWatchEnabled: readBool(d, Key.memoryWatchEnabled, Default.memoryWatchEnabled),
+               memoryWatchIgnoredApps: readIDList(d, Key.memoryWatchIgnoredApps),
+               memoryWatchPressureWarning: readBool(d, Key.memoryWatchPressureWarning, Default.memoryWatchPressureWarning))
     }
 }
 

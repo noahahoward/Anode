@@ -1,8 +1,9 @@
 import AppKit
 import PowerKit
 
-/// The first launch of a newly installed or updated Anode offers its helper at once (`HelperOfferRule`), through the same
-/// install route the three sections' buttons use: one notice, then macOS's own password dialog.
+/// The first launch of an UPDATED Anode offers to update a helper the person already installed (`HelperOfferRule`), through
+/// the same install route the three sections' buttons use: one notice, then macOS's own password dialog. A newly installed
+/// Anode offers nothing: no notice, no password, no helper.
 ///
 /// Every part is given, so the order can be tested: nothing is asked while something else has the screen, the build is
 /// remembered BEFORE the notice appears (a crash, a quit or a cancelled password cannot bring it back), and a helper that
@@ -36,11 +37,10 @@ final class HelperOfferAtLaunch {
     /// Main thread.
     func run() {
         guard mayAsk() else { return }
-        let installed = isInstalled()
+        // No helper, no offer: a fresh install never asks for a password, and never wakes anything.
+        guard isInstalled() else { return }
         // Decided once without the helper: a build that has offered already, or cannot install, does not wake it.
-        guard HelperOfferRule.offer(installed: false, helperVersion: nil, thisBuild: thisBuild,
-                                    offeredForBuild: offeredForBuild(), canInstall: canInstall()) != nil else { return }
-        guard installed else { return decide(installed: false, helperVersion: nil) }
+        guard canInstall(), !thisBuild.isEmpty, offeredForBuild() != thisBuild else { return }
         greet { [weak self] version in self?.decide(installed: true, helperVersion: version) }
     }
 

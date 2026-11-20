@@ -480,6 +480,14 @@ public final class PowerMonitor {
 
     public let scale: BatteryScale
     private var lastSweep: ProcessSampler.Sweep?
+    /// The most recent full sweep, or nil before the first. Read-only, for Memory Watch: it reads the footprints of
+    /// the processes it tracks from here with no syscall of its own.
+    ///
+    /// Read it only on the sampling queue that owns this monitor, right after `tick`: nothing here is locked, and a
+    /// full tick replaces it in `tick`'s `defer`. A light tick leaves the previous sweep in place, so a caller that
+    /// must not use one twice compares `timestamp`. It is deliberately not a `Snapshot` field: that would carry the
+    /// whole ~800-entry table to the main thread on every tick.
+    public var latestSweep: ProcessSampler.Sweep? { lastSweep }
     /// Confined to the sampling queue, which is serial — see `IdentityCache`.
     private let identities = ProcessSampler.IdentityCache()
     /// Awake-clock reading taken with `lastSweep`. Stored alongside it because a

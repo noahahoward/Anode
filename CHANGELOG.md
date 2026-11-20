@@ -7,6 +7,13 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.27.0 — 2026-11-19
+- Possible memory leaks (Beta Features, off until you turn it on): Anode watches for an app or process whose memory keeps growing and sends a notification saying a possible leak was found. It catches fast growth (about 50 MB a minute or more) within a few minutes, and slow growth (about 6 MB a minute or more, such as a browser that creeps up over days) after about two hours. It says "possible" because Anode can only see an app's memory size from outside.
+- Clicking that notification opens a window for the app: a graph of its memory, how much it grew and how fast, why Anode flagged it, and large Quit and Force Quit buttons. Nothing is ever quit automatically. Force Quit asks first, says how many processes it will end and that unsaved work may be lost, and a tool that lives inside an app's folder (such as a bundled Python) is quit on its own, not as the app.
+- Warn when memory is running low (Beta Features, off until you turn it on): a notification when your Mac is close to slowing down because of high memory pressure, heavy swapping, or one app holding about half of your memory. It names the biggest app so you can quit it before the Mac stalls.
+- Neither part uses administrator rights: they read memory sizes only, run no commands, and add no measurable cost when switched off.
+- Administrator rights: a freshly installed Anode no longer offers to install its helper at the first launch, so nothing asks for a password until you turn on something that needs it. Opening Beta Features no longer runs any sudo check while Keep Awake is off. Turning Keep Awake on now shows a warning that Always Stay Awake runs sudo commands, and the helper install notices say they run as root and may appear in an organisation's audit logs.
+
 ## 1.26.0 — 2026-11-18
 - Sound menu: with AirPods in Adaptive, the Adaptive Audio slider shows under it, where macOS's own menu has it and at macOS's level. Clicking it opens macOS's own Sound menu, where the slider is dragged (macOS does not let another app move it).
 - Sound menu: Adaptive is always asked of macOS. Anode used to refuse it by itself when it guessed one AirPod was out, and it guessed wrong with both in. When macOS refuses, its reason is shown and the check stays on the mode the AirPods are really in.

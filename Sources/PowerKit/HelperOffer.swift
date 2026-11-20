@@ -10,8 +10,9 @@ public enum HelperOffer: Equatable {
 
 /// Whether to offer, decided from plain facts so every case can be tested.
 ///
-/// The helper was only ever installed from a button in the Fans tab, Charge Control or Ultra Low Power Mode, which a person
-/// had to find. The owner asked for it to be offered at once when Anode is installed or updated instead.
+/// The helper is installed only from a button in the Fans tab, Charge Control or Ultra Low Power Mode, which a person has to
+/// turn on. A newly installed Anode does not offer it unasked: a machine whose administrator commands are restricted or
+/// audited must see none from an app nobody has switched anything on in.
 public enum HelperOfferRule {
     /// What to offer on this launch, or nil.
     ///
@@ -23,7 +24,10 @@ public enum HelperOfferRule {
     public static func offer(installed: Bool, helperVersion: Int?, appVersion: Int = FanDaemon.protocolVersion,
                              thisBuild: String, offeredForBuild: String, canInstall: Bool) -> HelperOffer? {
         guard canInstall, !thisBuild.isEmpty, offeredForBuild != thisBuild else { return nil }
-        guard installed else { return .install }
+        // A fresh install makes NO offer: nothing asks for an administrator password until the person turns on something
+        // that needs the helper, and the button there says what it will run. An UPDATE is offered only to someone who
+        // already chose to install the helper. (`.install` stays in the type for the buttons' own confirmations.)
+        guard installed else { return nil }
         // Installed and silent says nothing about what it speaks: a password is not asked for on a guess.
         guard let helperVersion else { return nil }
         return helperVersion < appVersion ? .update : nil
@@ -44,6 +48,7 @@ public enum HelperOfferNotice {
         let why = kind == .install ? "Anode was just installed." : "Anode was just updated, and its helper is an older one."
         return why + " " + HelperVocabulary.whatItIsFor + "\n\n"
             + "It runs as root, only while Anode needs it, and it can: " + HelperVocabulary.sentence + ".\n\n"
+            + HelperVocabulary.auditNote + "\n\n"
             + "macOS will ask for your password. "
             + "You can also do this later from the Fans tab, Charge Control or Ultra Low Power Mode."
     }
