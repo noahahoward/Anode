@@ -205,9 +205,10 @@ final class SoundMenuControllerTests: XCTestCase {
     func testWithMacOSsIconInUseThePollReadsNoOutputsAtAll() throws {
         let r = try rig(native: true); defer { r.cleanup() }
         XCTAssertTrue(r.bar.items.isEmpty, "macOS's icon is in use: Anode's has no symbol to set")
-        XCTAssertEqual(r.outputs.deviceReads, 0)
+        // Starting the controller lists the outputs once, for its change signature; the POLL must add none.
+        let reads = r.outputs.deviceReads
         for _ in 0..<5 { r.controller.refreshNativeIcon() }
-        XCTAssertEqual(r.outputs.deviceReads, 0)
+        XCTAssertEqual(r.outputs.deviceReads, reads)
     }
 
     func testAChangeOfTheListIsListedOnceAndTheIconFollows() throws {

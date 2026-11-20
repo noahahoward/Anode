@@ -23,10 +23,11 @@ public protocol LidChangeNotifying: AnyObject {
 public final class IOKitLidChangeNotifier: LidChangeNotifying {
 
     /// `kIOPMMessageClamshellStateChange` from IOKit/pwr_mgt/IOPM.h: `iokit_family_msg(sub_iokit_powermanagement, 0x100)`
-    /// = sys_iokit (0x38 << 26 = 0xE0000000) | sub_iokit_powermanagement (13 << 14 = 0x3400) | 0x100 = 0xE0003500.
+    /// = sys_iokit (0x38 << 26 = 0xE0000000) | sub_iokit_powermanagement (13 << 14 = 0x34000) | 0x100 = 0xE0034100
+    /// (checked by compiling the header's macro in C, which prints 0xE0034100).
     /// The header defines it with a function-like macro, which Swift does not import, so the value is written out.
     /// Sent when the lid state (or whether closing it sleeps the Mac) changes.
-    static let clamshellStateChange: UInt32 = 0xE000_3500
+    static let clamshellStateChange: UInt32 = 0xE003_4100
 
     private var port: IONotificationPortRef?
     private var notifier: io_object_t = 0
