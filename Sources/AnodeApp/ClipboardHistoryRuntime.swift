@@ -42,7 +42,13 @@ enum ClipboardHistoryRuntime {
             unregisterShortcut: { KeybindCenter.shared.unregister(owner: shortcutOwner) },
             schedule: { delay, work in DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) },
             accessDescription: { RealClipboard.accessDescription() },
-            closeSpotlight: { SystemSpotlight.closeIfOpen() })
+            closeSpotlight: { SystemSpotlight.closeIfOpen() },
+            idleSeconds: {
+                // The least time since any of the events a copy starts with (a key, a click, the pointer, the wheel).
+                [CGEventType.keyDown, .leftMouseDown, .mouseMoved, .scrollWheel].map {
+                    CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0)
+                }.min() ?? 0
+            })
         ClipboardHistoryController.current = controller
         watchScreenAndSession(controller)
         return controller

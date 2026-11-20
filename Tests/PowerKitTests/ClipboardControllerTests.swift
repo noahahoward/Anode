@@ -42,6 +42,7 @@ final class ClipboardControllerTests: XCTestCase {
         var scheduled: [(delay: TimeInterval, work: () -> Void)] = []
         var lines: [String] = []
         var spotlightCloses = 0
+        var idle: TimeInterval = 0
         var controller: ClipboardHistoryController!
 
         init(file: StaticString = #filePath, line: UInt = #line) {
@@ -69,6 +70,7 @@ final class ClipboardControllerTests: XCTestCase {
                 schedule: { [unowned self] delay, work in self.scheduled.append((delay, work)) },
                 accessDescription: { "test" },
                 closeSpotlight: { [unowned self] in self.spotlightCloses += 1 },
+                idleSeconds: { [unowned self] in self.idle },
                 log: { [unowned self] in self.lines.append($0) })
         }
 
@@ -318,6 +320,26 @@ final class ClipboardControllerTests: XCTestCase {
         a.panelOpened(front: "com.brave.Browser")
         let later = Date(timeIntervalSince1970: 1_800_000_000)
         XCTAssertEqual(a.resolve(("dev.anode.app", "Anode"), panelOpen: false, now: later, nameFor: { _ in "Brave" }).bundleID, "dev.anode.app")
+    }
+
+    /// A copy always follows a key or a mouse event, so a Mac nobody has touched for a minute is looked at every few seconds, not every second,
+    /// and the second-a-time look comes back with the first input.
+    func testAnIdleMacIsLookedAtSlowlyAndTheSecondATimeLookComesBackWithInput() {
+        let r = Rig()
+        r.settings.clipboardHistoryEnabled = true
+        XCTAssertEqual(r.timersStarted.last?.interval, ClipboardHistoryController.pollInterval)
+        r.idle = ClipboardHistoryController.idleAfter + 5
+        r.ticks.last?()
+        XCTAssertEqual(r.timersStarted.last?.interval, ClipboardHistoryController.idleInterval, "a timer at the slow pace")
+        XCTAssertEqual(r.timersRunning, 1, "the fast one stopped")
+        r.ticks.last?()
+        XCTAssertEqual(r.timersStarted.count, 2, "no new timer while the pace is the same")
+        r.idle = 2
+        r.ticks.last?()
+        XCTAssertEqual(r.timersStarted.last?.interval, ClipboardHistoryController.pollInterval)
+        XCTAssertEqual(r.timersRunning, 1)
+        XCTAssertEqual(ClipboardHistoryController.paceInterval(idle: 59), ClipboardHistoryController.pollInterval)
+        XCTAssertEqual(ClipboardHistoryController.paceInterval(idle: 60), ClipboardHistoryController.idleInterval)
     }
 
     func testPlainTextAsksForPlainText() {

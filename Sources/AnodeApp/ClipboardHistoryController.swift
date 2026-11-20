@@ -67,6 +67,14 @@ final class ClipboardHistoryController {
     /// How often the pasteboard's counter is looked at, and how far from that the system may move it to join other wake-ups.
     static let pollInterval: TimeInterval = 1
     static let pollTolerance: TimeInterval = 0.5
+    /// A copy always follows a key or a mouse event, so while the person has not touched the Mac for `idleAfter` seconds the counter is looked
+    /// at every `idleInterval` instead (an idle Anode woke once a second for nothing: the app's largest idle wakeup). The first copy after
+    /// a long rest is seen within `idleInterval`; two copies inside that one, straight after a rest, are seen as the second only.
+    static let idleAfter: TimeInterval = 60
+    static let idleInterval: TimeInterval = 5
+    static let idleTolerance: TimeInterval = 2
+    /// The interval for a Mac that has been idle `idle` seconds. Pure, for tests.
+    static func paceInterval(idle: TimeInterval) -> TimeInterval { idle >= idleAfter ? idleInterval : pollInterval }
     /// Entries past their time are dropped every this many polls (ten minutes), as well as whenever the panel opens.
     static let pollsPerPrune = 600
     /// ⌘V is sent this long after the panel is gone, so the app in front is front again and has the focus.
@@ -91,6 +99,10 @@ final class ClipboardHistoryController {
 
     private var tokens: [AnyObject] = []
     private var stopTimer: (() -> Void)?
+    /// The interval the running timer has (`pollInterval` or `idleInterval`).
+    private var paceNow = ClipboardHistoryController.pollInterval
+    /// How many seconds since the last key or mouse event (the real one reads the session's event source).
+    private let idleSeconds: () -> TimeInterval
     private var shortcutRegistered = false
     private var screensAsleep = false
     private var locked = false
@@ -119,6 +131,7 @@ final class ClipboardHistoryController {
          schedule: @escaping (TimeInterval, @escaping () -> Void) -> Void,
          accessDescription: @escaping () -> String = { "unknown" },
          closeSpotlight: @escaping () -> Void = {},
+         idleSeconds: @escaping () -> TimeInterval = { 0 },
          log: @escaping (String) -> Void = { FeatureLog.append("clipboard.log", $0) }) {
         self.settings = settings
         self.store = store
@@ -129,6 +142,7 @@ final class ClipboardHistoryController {
         self.frontApp = frontApp
         self.restoreFront = restoreFront
         self.startTimer = startTimer
+        self.idleSeconds = idleSeconds
         self.registerShortcut = registerShortcut
         self.unregisterShortcut = unregisterShortcut
         self.schedule = schedule
@@ -200,6 +214,7 @@ final class ClipboardHistoryController {
             if shouldWatch, stopTimer == nil {
                 // What was copied while nobody watched is not recorded.
                 watcher.resync()
+                paceNow = Self.pollInterval
                 stopTimer = startTimer(Self.pollInterval, Self.pollTolerance) { [weak self] in self?.tick() }
             } else if !shouldWatch, let stop = stopTimer {
                 stop()
@@ -245,6 +260,7 @@ final class ClipboardHistoryController {
     /// One look at the pasteboard's counter; what is new is recorded.
     func tick(now: Date = Date()) {
         guard !finished else { return }
+        adjustPace()
         noticeAccessibility()
         guard !settings.clipboardHistoryPaused else { return }
         pollsSincePrune += 1
@@ -260,6 +276,17 @@ final class ClipboardHistoryController {
         default:
             break
         }
+    }
+
+    /// Looks a second at a time while the person is at the Mac and every few seconds once they have not touched it for a minute.
+    private func adjustPace() {
+        guard stopTimer != nil else { return }
+        let wanted = Self.paceInterval(idle: idleSeconds())
+        guard wanted != paceNow else { return }
+        paceNow = wanted
+        stopTimer?()
+        let tolerance = wanted == Self.pollInterval ? Self.pollTolerance : Self.idleTolerance
+        stopTimer = startTimer(wanted, tolerance) { [weak self] in self?.tick() }
     }
 
     /// When Accessibility has just been granted, the shortcut is asked for again: the key listener that could not start before
