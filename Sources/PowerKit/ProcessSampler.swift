@@ -238,6 +238,36 @@ public enum ProcessSampler {
         )
     }
 
+    /// Start time and physical footprint of one process: a single `proc_pid_rusage` call and nothing else (no
+    /// path, no name, no allocation beyond the stack struct). Memory Watch re-reads a few dozen processes on each
+    /// light tick with this, and the start time it returns is the pid-reuse check at no extra cost.
+    ///
+    /// Same flavour as `energy(of:)` (V6), the one known to be valid on every macOS this app runs on. Returns nil on
+    /// EPERM (another user's process) or when the process has exited.
+    public static func footprint(of pid: pid_t) -> (start: UInt64, footprint: UInt64)? {
+        var info = rusage_info_v6()
+        let rc = withUnsafeMutablePointer(to: &info) { ptr -> Int32 in
+            ptr.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(pid, RUSAGE_INFO_V6, $0)
+            }
+        }
+        guard rc == 0 else { return nil }
+        return (info.ri_proc_start_abstime, info.ri_phys_footprint)
+    }
+
+    /// Every readable process's start time and footprint, with NO `proc_pidpath` and no name lookup: `proc_listpids`
+    /// plus the one rusage call each. This is Memory Watch's discovery pass when no full sweep has happened for a
+    /// while; it costs a fraction of `sweep(reusing:)`.
+    public static func footprints() -> [(pid: pid_t, start: UInt64, footprint: UInt64)] {
+        let pids = allPIDs()
+        var out: [(pid: pid_t, start: UInt64, footprint: UInt64)] = []
+        out.reserveCapacity(pids.count)
+        for pid in pids {
+            if let f = footprint(of: pid) { out.append((pid: pid, start: f.start, footprint: f.footprint)) }
+        }
+        return out
+    }
+
     public struct Sweep {
         public let processes: [ProcessKey: ProcessEnergy]
         public let timestamp: Date

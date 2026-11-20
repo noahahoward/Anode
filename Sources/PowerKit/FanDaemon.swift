@@ -864,6 +864,11 @@ public enum HelperVocabulary {
 
     /// "One helper for fans, Charge Control and Low Power Mode." Said wherever a part of the app tells the person the
     /// helper is installed: there is one helper, whichever part installed it.
+    /// Said wherever something is about to run administrator commands, so nobody finds them first in an audit log.
+    public static let auditNote = "Installing runs a command as root through macOS's administrator dialog, and the helper then "
+        + "runs as root. If your organisation restricts or audits sudo or administrator commands, this will appear in its logs "
+        + "and may be refused."
+
     public static var whatItIsFor: String {
         let names = uses.map(\.name)
         return "One helper for " + names.dropLast().joined(separator: ", ") + " and " + (names.last ?? "") + "."
@@ -1054,6 +1059,8 @@ public enum FanElevation {
     /// whether the install was started in the Fans tab or in Charge Control, so
     /// it names the Anode helper and says where the Fans tab's controls are.
     public static let installDisclosure = """
+    \(HelperVocabulary.auditNote)
+
     This asks for your password ONCE and then never again — the Anode helper \
     keeps working after you rebuild Anode and after you restart the Mac.
 

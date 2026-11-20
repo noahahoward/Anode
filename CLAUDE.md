@@ -13,6 +13,9 @@ When several kinds are in one push, the biggest wins. Then, in the same push:
 1. Add the new version at the top of `CHANGELOG.md` (date, plain bullets for the person using the app).
 2. Rewrite `UPDATE-NOTE.md`: two plain sentences saying what this update is. The update screen and `update.sh` show them.
 3. Tag the release commit `vX.Y.Z` (annotated) and push the tag with the branch.
+4. Create the GitHub Release for that tag, so the Releases box on GitHub matches the app (pushing a tag does not create one). Title
+   `Anode X.Y.Z`, notes = that version's CHANGELOG entry, no files attached (there is no download), and mark it Latest:
+   `gh release create vX.Y.Z --title "Anode X.Y.Z" --notes-file <notes> --verify-tag --latest`. Only after the owner says push.
 
 `Tests/PowerKitTests/ReleaseFilesTests.swift` fails if `VERSION`, the top changelog entry and the note disagree.
 

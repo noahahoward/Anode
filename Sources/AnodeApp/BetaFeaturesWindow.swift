@@ -64,6 +64,8 @@ final class BetaFeaturesWindowController: NSWindowController {
                  MenuBarHiderFeature(settings: settings), SoundMenuFeature(settings: settings),
                  BatteryMenuFeature(settings: settings), ChargeControlFeature(settings: settings),
                  UltraLowPowerFeature(settings: settings, candidates: UltraLowPowerRuntime.candidatesNow)]
+        // Its own statement: one more element in the list above is one more for the type checker to place.
+        list.append(MemoryWatchFeature(settings: settings))
         return list
     }
 
@@ -1139,6 +1141,8 @@ final class KeepAwakeFeature: BetaFeature {
 
     private let settings: Settings
     private let isAuthorised: () -> Bool
+    /// Asked before the feature is switched on, because it can run sudo commands (`AdminNotice`).
+    private let confirmEnable: () -> Bool
     private var token: AnyObject?
 
     let enableCheckbox = NSButton(checkboxWithTitle: "Show the Keep Awake icon in the menu bar", target: nil, action: nil)
@@ -1150,9 +1154,11 @@ final class KeepAwakeFeature: BetaFeature {
     let switchButton = NSButton(title: "", target: nil, action: nil)
 
     init(settings: Settings = .shared,
-         isAuthorised: @escaping () -> Bool = { PmsetClosedLidSleep().isAuthorised() }) {
+         isAuthorised: @escaping () -> Bool = { PmsetClosedLidSleep().isAuthorised() },
+         confirmEnable: @escaping () -> Bool = { AdminNotice.confirmKeepAwake() }) {
         self.settings = settings
         self.isAuthorised = isAuthorised
+        self.confirmEnable = confirmEnable
     }
 
     func makeView() -> NSView {
@@ -1188,7 +1194,16 @@ final class KeepAwakeFeature: BetaFeature {
         return column
     }
 
-    @objc private func toggled() { settings.keepAwakeEnabled = enableCheckbox.state == .on }
+    @objc func toggled() {
+        let on = enableCheckbox.state == .on
+        // The warning comes first and a "Cancel" leaves it off: nothing about Keep Awake is on until the person has been
+        // told that it can run sudo commands.
+        if on, !confirmEnable() {
+            enableCheckbox.state = .off
+            return
+        }
+        settings.keepAwakeEnabled = on
+    }
 
     /// Changing the mode switches to it at once if Keep Awake is running, as the menu does; otherwise it is the
     /// mode the next click on the icon starts.
@@ -1221,7 +1236,9 @@ final class KeepAwakeFeature: BetaFeature {
         stateLabel.isHidden = !on
         stateLabel.stringValue = "Now: " + (KeepAwakeController.current?.statusLine() ?? "Off")
         stateLabel.textColor = .secondaryLabelColor
-        let allowed = isAuthorised()
+        // Asked only while the feature is on: `isAuthorised` runs `sudo -n -l`, and a machine that audits sudo should see
+        // nothing of it from someone merely opening this window.
+        let allowed = on ? isAuthorised() : false
         permissionLabel.isHidden = !on
         permissionButton.isHidden = !on
         for v in [modePopUp, durationPopUp, switchButton] as [NSView] { v.isHidden = !on }

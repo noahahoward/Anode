@@ -71,6 +71,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     var menuBarHider: MenuBarHiderRuntime?
     /// Ultra Low Power Mode. Exists for the app's whole life; while its box is unticked it holds nothing but an observer.
     var ultraLowPower: UltraLowPowerRuntime?
+    /// Memory Watch (possible memory leaks). Exists for the app's whole life; while its box is unticked it holds nothing but an
+    /// observer.
+    var memoryWatch: MemoryWatchController?
+    /// Memory Watch's detector, nil while the box is unticked. Owned by the SAMPLING queue: made, replaced and read only there.
+    var leakWatch: MemoryWatching?
     var soundMenu: SoundMenuController?
     var batteryMenu: BatteryMenuController?
     /// Anode's Battery menu is open: it is a reader of the per-app figures, as the widgets' panel is (see `refresh`).
@@ -455,6 +460,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // Made after Keep Awake, whose own recovery has put the screen back by now. A session a crash left is undone here, and
         // nothing else of the mode exists until its box is ticked (Beta Features).
         ultraLowPower = UltraLowPowerRuntime.live(widgets: widgets, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() })
+        // Possible memory leaks: nothing of it exists until its setting is on (Beta Features).
+        memoryWatch = MemoryWatchRuntime.live(sampling: sampling, attach: { [weak self] in self?.leakWatch = $0 },
+                                              openProcesses: { [weak self] finding in self?.showLedger(onApp: finding.name) },
+                                              bringForward: { [weak self] in self?.main.show() })
         // Anode's own Sound menu: nothing of it exists until its setting is on (Beta Features).
         // One driver for both menus: macOS's Control Center is used by one job at a time.
         let panelDriver = SystemPanelDriver()
@@ -1056,6 +1065,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // process table and the drill-down, both of which are off screen.
             guard let snap = m.tick(full: wantFull, attribution: visible) else { return }
             if wantFull { self.lastFullTick = Date() }
+            // Memory Watch rides this tick: no timer of its own (nil while its box is unticked).
+            if let leak = self.leakWatch { MemoryWatchHook.feed(leak, sweep: wantFull ? m.latestSweep : nil, awake: PowerMonitor.awakeSeconds(), wall: Date()) }
 
             // Computed on the main thread above, because the tab it depends on is
             // main-thread state. Hidden: only what a widget is bound to. Visible:
@@ -2912,6 +2923,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         keepAwake?.shutdown()
         gameMode?.shutdown()
         menuBarHider?.shutdown()
+        memoryWatch?.shutdown()
         liveWallpaper?.shutdown()
         // Read on the sampling queue, which owns both — reading them here on
         // main raced the tick that mutates them. Safe to wait on: the sampling

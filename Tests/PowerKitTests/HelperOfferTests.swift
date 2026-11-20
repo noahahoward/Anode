@@ -14,8 +14,10 @@ final class HelperOfferTests: XCTestCase {
                               offeredForBuild: offeredFor, canInstall: canInstall)
     }
 
-    func testWithNoHelperInstalledItIsOffered() {
-        XCTAssertEqual(offer(installed: false, helper: nil), .install)
+    /// A fresh install asks for nothing: no notice, no administrator password, until the person turns something on.
+    func testWithNoHelperInstalledNothingIsOffered() {
+        XCTAssertNil(offer(installed: false, helper: nil))
+        XCTAssertNil(offer(installed: false, helper: nil, build: "never-offered-before", offeredFor: ""))
     }
 
     func testAHelperThatSpeaksLessThanThisAppIsOfferedAnUpdate() {
@@ -41,7 +43,7 @@ final class HelperOfferTests: XCTestCase {
     }
 
     func testTheNextBuildAsksAgain() {
-        XCTAssertEqual(offer(installed: false, helper: nil, build: "def5678", offeredFor: "abc1234"), .install)
+        XCTAssertNil(offer(installed: false, helper: nil, build: "def5678", offeredFor: "abc1234"))
         XCTAssertEqual(offer(installed: true, helper: 3, build: "def5678", offeredFor: "abc1234"), .update)
     }
 
@@ -116,14 +118,26 @@ final class HelperOfferTests: XCTestCase {
             start: { [unowned self] kind in self.started.append(kind); self.offeredForWhenStarted.append(self.offeredFor) })
     }
 
-    func testAFreshInstallOffersTheHelperOnceAndRemembersBeforeItAsks() {
+    /// The requirement: a fresh install, nothing turned on, shows no notice, asks for no password and wakes no helper.
+    func testAFreshInstallOffersNothingAndWakesNothing() {
         let rig = Rig()
         rig.step.run()
-        XCTAssertEqual(rig.started, [.install])
-        XCTAssertEqual(rig.offeredForWhenStarted, ["abc1234"], "written before the notice, so a crash cannot bring it back")
-        XCTAssertEqual(rig.greets, 0, "there is no helper to ask")
         rig.step.run()
-        XCTAssertEqual(rig.started, [.install], "the same build does not ask twice")
+        XCTAssertEqual(rig.started, [], "no helper offer on a fresh install")
+        XCTAssertEqual(rig.greets, 0, "there is no helper to ask")
+        XCTAssertEqual(rig.offeredFor, "", "nothing was offered, so nothing is remembered")
+    }
+
+    /// An update for someone who chose to install the helper is offered once, and remembered before the notice appears.
+    func testAnOlderInstalledHelperIsOfferedTheUpdateOnceAndRemembersBeforeItAsks() {
+        let rig = Rig()
+        rig.installed = true
+        rig.helperVersion = 3
+        rig.step.run()
+        XCTAssertEqual(rig.started, [.update])
+        XCTAssertEqual(rig.offeredForWhenStarted, ["abc1234"], "written before the notice, so a crash cannot bring it back")
+        rig.step.run()
+        XCTAssertEqual(rig.started, [.update], "the same build does not ask twice")
     }
 
     func testAnUpdateWhoseHelperIsOlderOffersTheUpdate() {
@@ -150,13 +164,15 @@ final class HelperOfferTests: XCTestCase {
     /// the question is left for the next.
     func testALaunchThatMayNotAskLeavesTheOfferForTheNext() {
         let rig = Rig()
+        rig.installed = true
+        rig.helperVersion = 3
         rig.mayAsk = false
         rig.step.run()
         XCTAssertEqual(rig.started, [])
         XCTAssertEqual(rig.offeredFor, "")
         rig.mayAsk = true
         rig.step.run()
-        XCTAssertEqual(rig.started, [.install])
+        XCTAssertEqual(rig.started, [.update])
     }
 
     func testABuildOfferedAlreadyDoesNotEvenWakeTheHelper() {

@@ -108,6 +108,12 @@ public final class Settings {
         public static let ultraLowPowerEfficiencyCores = "ultraLowPowerEfficiencyCores"
         /// Ultra Low Power Mode: a black backdrop behind every app window.
         public static let ultraLowPowerBlackBackdrop = "ultraLowPowerBlackBackdrop"
+        /// Memory Watch: the switch, and the identity keys (an app's bundle path, or a tool's executable path) the person
+        /// asked not to be warned about.
+        public static let memoryWatchEnabled = "memoryWatchEnabled"
+        public static let memoryWatchIgnoredApps = "memoryWatchIgnoredApps"
+        /// Memory Watch: also warn when the whole Mac is running low on memory (not only when one app leaks).
+        public static let memoryWatchPressureWarning = "memoryWatchPressureWarning"
         /// Wildcard — an observer registered on this key fires for every change.
         public static let any = "*"
     }
@@ -265,6 +271,10 @@ public final class Settings {
         /// lowers the draw (a fully black screen read 0.5 to 0.7 W under ordinary content). The owner ticks it off to keep the
         /// desktop picture.
         static let ultraLowPowerBlackBackdrop = true
+        /// OFF: it reads other processes' memory on every tick and posts notifications, so the person turns it on.
+        static let memoryWatchEnabled = false
+        /// OFF: one more system read per tick while Memory Watch is on, so the person turns it on.
+        static let memoryWatchPressureWarning = false
         /// Matches what the status item shows today: smoothed drain + runtime.
         // Must be real, currently-registered metric IDs. Stale ones are invisible
         // in the picker and get preserved forever as "unknown" bindings.
@@ -386,6 +396,9 @@ public final class Settings {
         var ultraLowPowerAlwaysKeep: [String]
         var ultraLowPowerEfficiencyCores: Bool
         var ultraLowPowerBlackBackdrop: Bool
+        var memoryWatchEnabled: Bool
+        var memoryWatchIgnoredApps: [String]
+        var memoryWatchPressureWarning: Bool
     }
     private var snapshot: Values
     private var defaultsObserver: NSObjectProtocol?
@@ -1184,6 +1197,26 @@ public final class Settings {
         set { writeBool(Key.ultraLowPowerBlackBackdrop, \.ultraLowPowerBlackBackdrop, newValue, Default.ultraLowPowerBlackBackdrop) }
     }
 
+    /// Whether Memory Watch looks for apps whose memory keeps growing and says so in a notification (Beta Features). Off
+    /// until asked for.
+    public var memoryWatchEnabled: Bool {
+        get { Settings.readBool(defaults, Key.memoryWatchEnabled, Default.memoryWatchEnabled) }
+        set { writeBool(Key.memoryWatchEnabled, \.memoryWatchEnabled, newValue, Default.memoryWatchEnabled) }
+    }
+
+    /// Identity keys (an app's outermost bundle path, or a tool's executable path) Memory Watch never warns about.
+    public var memoryWatchIgnoredApps: [String] {
+        get { Settings.readIDList(defaults, Key.memoryWatchIgnoredApps) }
+        set { writeIDList(newValue, key: Key.memoryWatchIgnoredApps, keyPath: \.memoryWatchIgnoredApps) }
+    }
+
+    /// Whether Memory Watch also warns when the whole Mac is low on memory (high memory pressure, a lot of swap, or one app
+    /// holding half of the RAM). Off until asked for; only has an effect while `memoryWatchEnabled` is on.
+    public var memoryWatchPressureWarning: Bool {
+        get { Settings.readBool(defaults, Key.memoryWatchPressureWarning, Default.memoryWatchPressureWarning) }
+        set { writeBool(Key.memoryWatchPressureWarning, \.memoryWatchPressureWarning, newValue, Default.memoryWatchPressureWarning) }
+    }
+
     private static func readAlwaysKeep(_ d: UserDefaults) -> [String] {
         guard let text = d.string(forKey: storageKey(Key.ultraLowPowerAlwaysKeep)),
               let data = text.data(using: .utf8),
@@ -1451,6 +1484,9 @@ public final class Settings {
         if old.ultraLowPowerAlwaysKeep != now.ultraLowPowerAlwaysKeep { notify(Key.ultraLowPowerAlwaysKeep) }
         if old.ultraLowPowerEfficiencyCores != now.ultraLowPowerEfficiencyCores { notify(Key.ultraLowPowerEfficiencyCores) }
         if old.ultraLowPowerBlackBackdrop != now.ultraLowPowerBlackBackdrop { notify(Key.ultraLowPowerBlackBackdrop) }
+        if old.memoryWatchEnabled != now.memoryWatchEnabled { notify(Key.memoryWatchEnabled) }
+        if old.memoryWatchIgnoredApps != now.memoryWatchIgnoredApps { notify(Key.memoryWatchIgnoredApps) }
+        if old.memoryWatchPressureWarning != now.memoryWatchPressureWarning { notify(Key.memoryWatchPressureWarning) }
     }
 
     // ── Plumbing ────────────────────────────────────────────────────────────
@@ -1663,7 +1699,10 @@ public final class Settings {
                ultraLowPowerEnabled: readBool(d, Key.ultraLowPowerEnabled, Default.ultraLowPowerEnabled),
                ultraLowPowerAlwaysKeep: readAlwaysKeep(d),
                ultraLowPowerEfficiencyCores: readBool(d, Key.ultraLowPowerEfficiencyCores, Default.ultraLowPowerEfficiencyCores),
-               ultraLowPowerBlackBackdrop: readBool(d, Key.ultraLowPowerBlackBackdrop, Default.ultraLowPowerBlackBackdrop))
+               ultraLowPowerBlackBackdrop: readBool(d, Key.ultraLowPowerBlackBackdrop, Default.ultraLowPowerBlackBackdrop),
+               memoryWatchEnabled: readBool(d, Key.memoryWatchEnabled, Default.memoryWatchEnabled),
+               memoryWatchIgnoredApps: readIDList(d, Key.memoryWatchIgnoredApps),
+               memoryWatchPressureWarning: readBool(d, Key.memoryWatchPressureWarning, Default.memoryWatchPressureWarning))
     }
 }
 
