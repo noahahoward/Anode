@@ -570,6 +570,14 @@ final class MemoryGrowthTests: XCTestCase {
                                                 bundle: "/Applications/Foo.app"))
     }
 
+    /// The ignore list holds identity keys, and a key is not an executable path: the app's bundle path shows as its name.
+    func testANameCanBeReadFromAnIdentityKey() {
+        XCTAssertEqual(IdentityKey.name(forKey: "/Applications/Safari.app"), "Safari")
+        XCTAssertEqual(IdentityKey.name(forKey: "/Applications/Google Chrome.app"), "Google Chrome")
+        XCTAssertEqual(IdentityKey.name(forKey: "/usr/local/bin/node"), "node")
+        XCTAssertEqual(IdentityKey.name(forKey: ".app"), ".app")
+    }
+
     /// A tool is itself: keyed by its executable path, so every `node` on a Mac is not one thing.
     func testAToolKeepsItsExecutablePath() {
         let k = IdentityKey.key(forExecutablePath: "/usr/local/bin/node")

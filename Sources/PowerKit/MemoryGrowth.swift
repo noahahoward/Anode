@@ -645,6 +645,15 @@ public enum IdentityKey {
         return false
     }
 
+    /// The name to show for an identity KEY as `key(forExecutablePath:)` returns it (the ignore list holds keys, not
+    /// executable paths): an app's bundle file name without ".app", else the last part of a tool's path.
+    public static func name(forKey key: String) -> String {
+        let leaf = (key as NSString).lastPathComponent
+        guard key.hasSuffix(".app") else { return leaf }
+        let trimmed = String(leaf.dropLast(4))
+        return trimmed.isEmpty ? leaf : trimmed
+    }
+
     /// The name to show: an app's bundle file name without ".app" (what Finder shows), else the executable's own name.
     public static func name(forExecutablePath path: String) -> String {
         let k = key(forExecutablePath: path)

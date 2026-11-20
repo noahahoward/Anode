@@ -268,7 +268,7 @@ final class MemoryWatchFeature: BetaFeature {
     private func redrawIgnored(_ keys: [String]) {
         clear(ignoredStack)
         for key in keys {
-            let name = IdentityKey.name(forExecutablePath: key)
+            let name = IdentityKey.name(forKey: key)
             ignoredStack.addArrangedSubview(row(title: name, buttonTitle: "Remove", id: key,
                                                 action: #selector(removePressed(_:)),
                                                 accessibility: "Warn about \(name) again"))
