@@ -304,7 +304,7 @@ final class DockPreviews {
     private var healthTimer: Timer?
     private var lastUnmatched: String?
     /// Looked at from time to time while attached: see `healthCheck`.
-    static let healthInterval: TimeInterval = 5
+    static let healthInterval: TimeInterval = 20
 
     private var pending: Hover?
     private var shown: Hover?
@@ -402,7 +402,9 @@ final class DockPreviews {
         if observer == nil { attach() }
         if observer == nil {
             guard retryTimer == nil else { return }
+            // Only while attaching to the Dock keeps failing; a retry a second late is the same retry.
             retryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.apply() }
+                .coalescing(tolerance: 1)
         } else {
             retryTimer?.invalidate()
             retryTimer = nil
@@ -441,9 +443,10 @@ final class DockPreviews {
             self?.iconPressed()
         }
         healthTimer?.invalidate()
+        // A restarted Dock is noticed up to 2 s later than before; the check has no visible effect of its own.
         healthTimer = Timer.scheduledTimer(withTimeInterval: Self.healthInterval, repeats: true) { [weak self] _ in
             self?.healthCheck()
-        }
+        }.coalescing(tolerance: Self.healthInterval * 0.4)
         Self.log("attached to the Dock (pid \(dock.processIdentifier))")
     }
 

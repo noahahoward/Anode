@@ -481,9 +481,10 @@ final class FanControlPanel: NSView {
         pollTimer?.invalidate()
         // A timer as well as the sample tick, so the helper coming up is noticed
         // even if the user has switched to another tab while typing a password.
+        // Only while the helper is starting; the helper coming up is noticed within 1.2 s instead of 1 s.
         pollTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             self?.pollWhileStarting()
-        }
+        }.coalescing(tolerance: 0.2)
     }
 
     private func endPolling() {

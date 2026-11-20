@@ -509,6 +509,8 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 // display attached, woken or reconnected posts several over a few seconds —
                 // so each restarts the settle window, whether or not any geometry changed.
                 self.lastSpaceChange = Date()
+                // A different screen may have a different scale and a different bar behind the pictures.
+                self.invalidateRendered()
                 let now = NSScreen.screens.map { ScreenGeometry($0) }
                 guard now != self.lastScreens else { return }
                 self.lastScreens = now
@@ -565,10 +567,19 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 [weak self] _ in self?.spaceChanged()
             })
         }
+        // Light or dark menu bar: the pictures are template or dynamically coloured, so AppKit redraws them for the
+        // new look by itself, but a widget must never keep a key for a look that has gone. Posted by the system.
+        appearanceToken = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil, queue: .main) { [weak self] _ in
+                self?.invalidateRendered()
+                self?.refresh()
+            }
         onMain { self.rebuild() }
     }
 
     deinit {
+        if let appearanceToken { DistributedNotificationCenter.default().removeObserver(appearanceToken) }
         placementCheck?.cancel()
         for token in observers { NotificationCenter.default.removeObserver(token) }
         for token in workspaceObservers {
@@ -662,6 +673,8 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
 
     private func rebuild() {
         lastRendered.removeAll()
+        lastSparkHistory.removeAll()
+        lastLabel.removeAll()
         for entry in items { NSStatusBar.system.removeStatusItem(entry.item) }
         items.removeAll()
         placementCheck?.cancel()
@@ -1068,14 +1081,46 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// for several ticks — but the image behind one was being redrawn on every
     /// tick regardless: an NSImage allocation, a text layout and a template
     /// composite, on the main thread, for pixels identical to the ones already
-    /// there. Only the sparkline is exempt, because its history moves even when
-    /// the latest value does not.
-    private var lastRendered: [String: String] = [:]
+    /// there. Every style is covered now (a bar and a dot by the fraction and the
+    /// severity they would show, a sparkline by its history).
+    ///
+    /// Keyed by the status item and not by the metric: two widgets may show the same
+    /// metric in different styles, and one shared key made them redraw each other
+    /// on every tick. Emptied by `rebuild()` (a new item has drawn nothing) and by
+    /// `invalidateRendered()` (what the system may have changed under the images).
+    /// The colours in the images are dynamic or template, so a change of
+    /// appearance is redrawn by AppKit from the same image without a new one;
+    /// the notification below clears the keys all the same.
+    private var lastRendered: [ObjectIdentifier: String] = [:]
+    /// The history a sparkline last drew (compared whole: a flat window draws the same picture, a moving one does not).
+    private var lastSparkHistory: [ObjectIdentifier: [Double]] = [:]
+    /// The accessibility label last given to each item, so the unchanged one is not asked of AppKit again.
+    private var lastLabel: [ObjectIdentifier: String] = [:]
+    private var appearanceToken: NSObjectProtocol?
+
+    /// Where the readings come from. The shared registry; a test hands in its own.
+    var registry: MetricRegistry = MetricRegistry.shared
+
+    /// How many times a widget's image has been assigned since this controller was made. A test seam: an unchanged
+    /// reading must leave it where it was.
+    private(set) var imageAssignments = 0
+
+    /// Forget what each widget drew, so the next refresh draws them all again. For whatever the system can change
+    /// under the pictures without telling the widgets (the menu bar's appearance, a screen change).
+    func invalidateRendered() {
+        lastRendered.removeAll()
+        lastSparkHistory.removeAll()
+    }
+
+    private func assignImage(_ image: NSImage?, to button: NSStatusBarButton) {
+        imageAssignments += 1
+        button.image = image
+    }
 
     private func render(_ entry: (config: WidgetConfig, item: NSStatusItem)) {
         guard let button = entry.item.button else { return }
         let id = MetricID(rawValue: entry.config.metricID)
-        let registry = MetricRegistry.shared
+        let registry = self.registry
         let descriptor = registry.descriptor(for: id)
         // Unknown ID never reaches a provider; known ID may still be nil (no data
         // yet, or honestly unavailable — e.g. time remaining on AC). Both render as
@@ -1110,8 +1155,12 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         let tip = WidgetRenderer.toolTip(
             metricID: entry.config.metricID, descriptor: descriptor, value: value,
             style: entry.config.style)
+        let itemID = ObjectIdentifier(entry.item)
         if button.toolTip != nil { button.toolTip = nil }
-        if button.accessibilityLabel() != tip { button.setAccessibilityLabel(tip) }
+        if lastLabel[itemID] != tip {
+            lastLabel[itemID] = tip
+            button.setAccessibilityLabel(tip)
+        }
 
         if entry.config.style == .group {
             // A menu attached to the status item opens directly beneath it, which is
@@ -1136,15 +1185,17 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             // that metric's reading beside the glyph and redraws when it moves.
             let headline = id == .groupPlaceholder ? nil : Self.shownValue(paused: paused, value: value?.text ?? "\u{2014}")
             let key = "group\u{1}\(headline ?? "")"
-            if lastRendered[entry.config.metricID] != key {
-                lastRendered[entry.config.metricID] = key
+            if lastRendered[itemID] != key {
+                lastRendered[itemID] = key
                 button.attributedTitle = NSAttributedString()
                 button.imagePosition = .imageOnly
-                button.image = WidgetRenderer.groupImage(headline: headline)
+                assignImage(WidgetRenderer.groupImage(headline: headline), to: button)
             }
             return
         }
-        entry.item.menu = nil
+        // Only when there is one to take away: assigning `menu` made AppKit schedule a redraw of the status item
+        // (`_updateReplicantsUnlessMenuIsTracking`) on every tick, even with nil over nil.
+        if entry.item.menu != nil { entry.item.menu = nil }
 
         switch entry.config.style {
         case .text, .textWithLabel:
@@ -1157,9 +1208,9 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             let label = entry.config.style == .textWithLabel
                 ? (value?.label ?? descriptor?.shortTitle ?? "?") : nil
             let text = Self.shownValue(paused: paused, value: value?.text ?? "\u{2014}")
-            let key = "\(label ?? "")\u{1}\(text)"
-            guard lastRendered[entry.config.metricID] != key else { return }
-            lastRendered[entry.config.metricID] = key
+            let key = "\(density == .compact ? "c" : "f")\u{1}\(label ?? "")\u{1}\(text)"
+            guard lastRendered[itemID] != key else { return }
+            lastRendered[itemID] = key
 
             button.attributedTitle = NSAttributedString()
             button.imagePosition = .imageOnly
@@ -1170,7 +1221,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 // beside a number in the menu bar is uninterpretable and reads as an
                 // error. The tooltip carries it, where there is room to say so.
                 value: text, compact: density == .compact)
-            button.image = image
+            assignImage(image, to: button)
             // AppKit pads every variable-length item by 8 pt a side — 16 pt per
             // widget, more than a whole label saves. A squeezed bar sizes the item
             // to its drawing instead, which is where compact's width comes from.
@@ -1180,13 +1231,38 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         case .group:
             break   // handled above, before this switch
         case .bar, .sparkline, .dot:
+            // What would be drawn, as a key. Paused, all three are the word.
+            let compact = density == .compact
+            let key: String
+            var sparkHistory: [Double]? = nil
+            if paused {
+                key = "paused\u{1}\(compact)"
+            } else {
+                switch entry.config.style {
+                case .dot:
+                    key = "dot\u{1}\(WidgetRenderer.severityLevel(descriptor, value))"
+                case .bar:
+                    // A 1024th of the fraction is a fiftieth of a point of the 22 pt it is drawn across.
+                    let fraction = descriptor.flatMap { d in
+                        value.flatMap { WidgetRenderer.normalizedFraction(d.unit, $0.value) }
+                    }
+                    key = "bar\u{1}\(fraction.map { Int(($0 * 1024).rounded()) } ?? -1)\u{1}\(WidgetRenderer.severityLevel(descriptor, value))"
+                default:
+                    key = "sparkline"
+                    sparkHistory = history[entry.config.metricID] ?? []
+                }
+            }
+            guard lastRendered[itemID] != key || lastSparkHistory[itemID] != sparkHistory else { return }
+            lastRendered[itemID] = key
+            lastSparkHistory[itemID] = sparkHistory
             button.attributedTitle = NSAttributedString()
             button.imagePosition = .imageOnly
             // A bar, a dot or a sparkline has no text to say it, so a paused one is drawn as the word.
-            button.image = paused
-                ? WidgetRenderer.textImage(label: nil, value: Self.pausedText, compact: density == .compact)
+            assignImage(paused
+                ? WidgetRenderer.textImage(label: nil, value: Self.pausedText, compact: compact)
                 : WidgetRenderer.image(style: entry.config.style, descriptor: descriptor, value: value,
-                                       history: history[entry.config.metricID] ?? [])
+                                       history: sparkHistory ?? []),
+                        to: button)
         }
     }
 
@@ -1508,22 +1584,35 @@ enum WidgetRenderer {
     /// full battery and a low drain are both green. Neutral (secondaryLabel) when
     /// there is no value or no meaningful scale.
     static func severityColor(_ descriptor: MetricDescriptor?, _ value: MetricValue?) -> NSColor {
+        switch severityLevel(descriptor, value) {
+        case .neutral: return .secondaryLabelColor
+        case .green:   return .systemGreen
+        case .yellow:  return .systemYellow
+        case .red:     return .systemRed
+        }
+    }
+
+    /// Which of the four colours `severityColor` gives, without making the colour: what a widget compares to know
+    /// whether it would draw anything different.
+    enum SeverityLevel { case neutral, green, yellow, red }
+
+    static func severityLevel(_ descriptor: MetricDescriptor?, _ value: MetricValue?) -> SeverityLevel {
         // The metric's own verdict first: it knows what "bad" is where a scale
         // on the value cannot (memory pressure, a fan's own maximum).
         if let sev = value?.severity, sev.isFinite {
             let badness = min(max(sev, 0), 1)
-            if badness < 0.5 { return .systemGreen }
-            if badness < 0.8 { return .systemYellow }
-            return .systemRed
+            if badness < 0.5 { return .green }
+            if badness < 0.8 { return .yellow }
+            return .red
         }
         guard let d = descriptor, let v = value,
               let f = normalizedFraction(d.unit, v.value) else {
-            return .secondaryLabelColor
+            return .neutral
         }
         let badness = d.higherIsWorse ? f : 1 - f
-        if badness < 0.5 { return .systemGreen }
-        if badness < 0.8 { return .systemYellow }
-        return .systemRed
+        if badness < 0.5 { return .green }
+        if badness < 0.8 { return .yellow }
+        return .red
     }
 
     // ── Glyphs ──────────────────────────────────────────────────────────────────

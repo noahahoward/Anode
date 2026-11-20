@@ -120,7 +120,7 @@ final class BatteryMenuController {
     private var pressesInFlight = 0
 
     init(settings: Settings, driver: SystemPanelDriving, accessibility: @escaping () -> Bool, presenter: BatteryMenuPresenting,
-         native: NativeIconHosting, pollInterval: TimeInterval = 3, followUpDelay: TimeInterval = 1.5,
+         native: NativeIconHosting, pollInterval: TimeInterval = 10, followUpDelay: TimeInterval = 1.5,
          openBetaFeatures: @escaping () -> Void = {}, openLedger: @escaping (String) -> Void = { _ in },
          ultra: UltraModeControlling? = nil, charge: ChargeLimiting? = nil, hardDrainPrompt: HardDrainPrompting? = nil,
          energyApps: @escaping () -> [SignificantEnergy.Candidate] = { [] }, onOpenChanged: @escaping (Bool) -> Void = { _ in },
@@ -193,7 +193,9 @@ final class BatteryMenuController {
         native.start(); nativeRunning = true
         if pollInterval > 0 {
             // The icon moves when the bar's other items change width: its frame is looked up again now and then.
+            // 1 s of slack on 3 s: a press still gets a fresh look under the pointer, so a frame a second older is not noticed.
             pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in _ = self?.native.currentFrame() }
+                .coalescing(tolerance: pollInterval / 3)
         }
     }
 
@@ -259,7 +261,9 @@ final class BatteryMenuController {
         onOpenChanged(on)
         statsTimer?.invalidate(); statsTimer = nil
         if on, statsInterval > 0 {
+            // Only while the panel is open; the figures come from measurements, so a tick 0.25 s late shows the same numbers.
             statsTimer = Timer.scheduledTimer(withTimeInterval: statsInterval, repeats: true) { [weak self] _ in self?.refreshEnergyStats() }
+                .coalescing(tolerance: statsInterval / 8)
         }
     }
 

@@ -165,7 +165,9 @@ final class AppAudioRouter: AppVolumeControlling {
     private func scheduleRecheck() {
         let waiting = sessions.values.contains { !$0.muting }
         if waiting, recheck == nil {
+            // Only while a permission is unanswered; holding the app a second later than the answer is not noticed.
             recheck = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.reconcile() }
+                .coalescing(tolerance: 1)
         } else if !waiting {
             recheck?.invalidate(); recheck = nil
         }
