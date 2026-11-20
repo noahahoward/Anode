@@ -21,9 +21,9 @@ final class MemoryWatchFeature: BetaFeature {
     var layoutChanged: (() -> Void)?
 
     /// What the second box says it does, in plain sentences: what it watches, what it sends, what it never does and costs.
-    static let pressureSummary = "Watches how full the Mac's memory is. When the Mac is close to slowing down (high memory "
-        + "pressure, heavy swapping, or one app holding about half of your memory) it sends a notification naming the biggest "
-        + "app, so you can quit it before the Mac stalls. It never quits anything by itself. It reads memory sizes only, uses "
+    static let pressureSummary = "Watches how full the Mac's memory is, the way macOS's own memory pressure graph does. When "
+        + "the graph stays orange (high memory pressure) for two minutes it sends a warning, and when it turns red it sends "
+        + "a critical one, naming the biggest app so you can quit it before the Mac stalls. It never quits anything by itself. It reads memory sizes only, uses "
         + "no administrator privileges and runs no commands. While it is on it costs one small system reading each time "
         + "Anode samples; nothing of it exists while it is off. It needs permission to show notifications."
 

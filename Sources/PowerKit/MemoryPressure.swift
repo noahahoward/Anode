@@ -59,8 +59,9 @@ public enum SystemMemoryReader {
 /// Every threshold the high-memory warning decides by, in one place. Starting values, tuned against real use.
 public struct PressureRules: Equatable {
 
-    /// The kernel's pressure level at warning (2) or above, held this long.
-    public var warningSeconds: Double = 60
+    /// The kernel's pressure level at warning (2, the orange of Activity Monitor's graph) or above, held this long. Two
+    /// minutes: a build or a test run pushes the level up for a minute and lets it fall, and nobody needs telling.
+    public var warningSeconds: Double = 120
     /// The kernel's pressure level at critical (4), held this long.
     public var criticalSeconds: Double = 15
 
@@ -69,10 +70,16 @@ public struct PressureRules: Equatable {
     public var swapFractionOfRAM: Double = 0.25
     public var swapMinBytes: UInt64 = 4 << 30
     public var swapSeconds: Double = 120
+    /// Whether swap use raises an alert of its own. OFF by default: macOS leaves swap files in use long after pressure has
+    /// gone, so a Mac that is running well can show gigabytes of swap, and the warning must follow the pressure level.
+    public var watchesSwap: Bool = false
 
     /// The single largest app at or above this share of physical RAM, held `dominantSeconds`.
     public var dominantShareOfRAM: Double = 0.50
     public var dominantSeconds: Double = 300
+    /// Whether one app holding a large share of the RAM raises an alert of its own. OFF by default for the same reason:
+    /// the warning follows the pressure level (orange, then red), and a slow leak is the leak detector's to find.
+    public var watchesDominantApp: Bool = false
 
     /// After a warning or a critical alert, the same level may not fire again until pressure has been back to normal AND
     /// no other rule has been true for this long.
@@ -90,7 +97,18 @@ public struct PressureRules: Equatable {
 
     public init() {}
 
+    /// Pressure only: orange (level 2) held two minutes is the warning, red (level 4) held 15 seconds is the critical one.
     public static let standard = PressureRules()
+
+    /// The first version's rules: a warning after one minute, and swap and one big app as triggers of their own. Kept so
+    /// those rules stay tested and can be switched on again; nothing uses them by default.
+    public static var everything: PressureRules {
+        var r = PressureRules()
+        r.warningSeconds = 60
+        r.watchesSwap = true
+        r.watchesDominantApp = true
+        return r
+    }
 
     /// The swap level the swap rule needs on a Mac with this much RAM.
     public func swapThreshold(totalBytes: UInt64) -> UInt64 {
@@ -203,8 +221,8 @@ public struct PressureTracker: Equatable {
         let level = reading.pressureLevel ?? 1
         let critical = level >= 4
         let warning = level >= 2
-        let swap = reading.swapUsedBytes >= rules.swapThreshold(totalBytes: reading.totalBytes)
-        let dominant = reading.totalBytes > 0
+        let swap = rules.watchesSwap && reading.swapUsedBytes >= rules.swapThreshold(totalBytes: reading.totalBytes)
+        let dominant = rules.watchesDominantApp && reading.totalBytes > 0
             && topAppBytes >= UInt64(max(0, rules.dominantShareOfRAM * Double(reading.totalBytes)))
         let calm = !warning && !swap && !dominant
 
