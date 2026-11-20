@@ -341,6 +341,17 @@ final class BackdropFeature: BetaFeature {
     let modeNote = BetaFeaturesWindowController.wrapping("")
     let accessStatus = BetaFeaturesWindowController.wrapping("")
     let accessButton = NSButton(title: "Open Screen Recording Settings…", target: nil, action: nil)
+    /// macOS can leave its own menu bar painting over this one (the wallpaper, and the notch, show through although a mode is on), until the
+    /// bar's auto-hide option is chosen again, even if it is the option already chosen (seen 2026-11-19: Anode's strip was drawn and in
+    /// place, and not even a plain window of another program showed over the bar; choosing the option again put it right). Anode cannot
+    /// see that without reading the screen, so it says so, with a way to the setting.
+    static let barCoveredNote = "If the wallpaper or the notch shows through the menu bar although this is on, open Menu Bar settings and "
+        + "choose \u{201C}Automatically hide and show the menu bar\u{201D} again, even if it already says the option you want: "
+        + "macOS can leave its own bar covering this one until it is chosen again."
+    let barCoveredLabel = BetaFeaturesWindowController.wrapping(BackdropFeature.barCoveredNote, color: .secondaryLabelColor)
+    let menuBarSettingsButton = NSButton(title: "Open Menu Bar Settings…", target: nil, action: nil)
+    /// Where that setting is: the Menu Bar pane of System Settings (the Control Center extension).
+    static let menuBarSettingsURL = URL(string: "x-apple.systempreferences:com.apple.ControlCenter-Settings.extension")!
 
     init(settings: Settings = .shared,
          screenRecordingAllowed: @escaping () -> Bool = { ScreenRecordingAccess.isGranted }) {
@@ -373,8 +384,13 @@ final class BackdropFeature: BetaFeature {
         desktopCheckbox.target = self
         desktopCheckbox.action = #selector(desktopToggled)
 
+        menuBarSettingsButton.target = self
+        menuBarSettingsButton.action = #selector(openMenuBarSettings)
+        menuBarSettingsButton.bezelStyle = .rounded
+        menuBarSettingsButton.controlSize = .small
+
         let column = NSStackView(views: [modeRow, modeNote, sliderRow, desktopCheckbox, desktopNote,
-                                         accessStatus, accessButton])
+                                         accessStatus, accessButton, barCoveredLabel, menuBarSettingsButton])
         column.orientation = .vertical
         column.alignment = .leading
         column.spacing = 8
@@ -408,6 +424,10 @@ final class BackdropFeature: BetaFeature {
         ScreenRecordingAccess.openSettings()
     }
 
+    @objc private func openMenuBarSettings() {
+        NSWorkspace.shared.open(Self.menuBarSettingsURL)
+    }
+
     // ── What it says ────────────────────────────────────────────────────────
 
     func refresh() {
@@ -438,6 +458,9 @@ final class BackdropFeature: BetaFeature {
             : "Screen Recording: not allowed, so only Anode's own windows are matched; other apps "
               + "keep the plain block."
         accessStatus.textColor = allowed ? .secondaryLabelColor : .systemOrange
+        // Only while there is a bar to be covered.
+        barCoveredLabel.isHidden = mode == .off
+        menuBarSettingsButton.isHidden = mode == .off
         layoutChanged?()
     }
 

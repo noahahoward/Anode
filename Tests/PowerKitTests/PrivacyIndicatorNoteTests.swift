@@ -151,4 +151,27 @@ final class PrivacyIndicatorNoteTests: XCTestCase {
         XCTAssertEqual(try swiftFiles(in: "Sources/AnodeApp", containing: "KeybindCenter.shared.register("), known,
                        "a feature now registers a shortcut, which keeps the shared keyboard tap on: say so in its summary")
     }
+
+    // ── The menu bar backdrop's note about a covered strip ──────────────────
+
+    /// macOS can paint its own bar over the strip until the auto-hide option is chosen again; the section says so, with a way to the setting,
+    /// and only while a mode is on.
+    func testTheBackdropSectionSaysWhatToDoWhenMacOSCoversTheStrip() throws {
+        _ = NSApplication.shared
+        let (defaults, suite) = try TestDefaults.make(owner: "BackdropNote", test: name)
+        defer { TestDefaults.destroy(defaults, suite) }
+        let settings = Settings(defaults: defaults)
+        let feature = BackdropFeature(settings: settings, screenRecordingAllowed: { false })
+        _ = feature.makeView()
+        settings.menuBarBackdropMode = .off
+        feature.refresh()
+        XCTAssertTrue(feature.barCoveredLabel.isHidden, "no strip, nothing to be covered")
+        XCTAssertTrue(feature.menuBarSettingsButton.isHidden)
+        settings.menuBarBackdropMode = .solid
+        feature.refresh()
+        XCTAssertFalse(feature.barCoveredLabel.isHidden)
+        XCTAssertFalse(feature.menuBarSettingsButton.isHidden)
+        XCTAssertTrue(BackdropFeature.barCoveredNote.contains("again"))
+        XCTAssertEqual(BackdropFeature.menuBarSettingsURL.scheme, "x-apple.systempreferences")
+    }
 }
