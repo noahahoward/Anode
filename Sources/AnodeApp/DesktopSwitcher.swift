@@ -320,7 +320,9 @@ final class DesktopSwitcher {
             AccessibilityAccess.logDiagnosisOnce(for: "desktop switcher")
             AccessibilityAccess.repairOncePerBuild()
             guard retryTimer == nil else { return }
+            // Only while Accessibility is missing; a retry a second late is the same retry.
             retryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.apply() }
+                .coalescing(tolerance: 1)
         } else {
             retryTimer?.invalidate()
             retryTimer = nil

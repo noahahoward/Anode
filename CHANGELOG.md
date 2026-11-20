@@ -7,6 +7,15 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.27.1 — 2026-11-19
+- The low-memory warning is less twitchy: it follows macOS's own memory pressure graph and nothing else. It warns when the graph has stayed orange for two minutes and sends a critical warning when it turns red. Heavy swap use and one big app no longer raise an alert by themselves, because a Mac that is running well can show both.
+- Anode uses much less energy while it sits in the menu bar. On one Mac with Memory Watch switched on, its processor use fell from about 0.5% of one core to about 0.2%, and it wakes the processor far less often.
+- The Sound and Battery menu icons no longer ask macOS for the whole list of audio devices and menu bar items every three seconds. Following the icon now costs a few cheap reads, once every ten seconds.
+- A widget that shows the GPU reads one value from it instead of copying all of the GPU's properties, which more than halved the cost of the background reading.
+- Menu bar widgets are redrawn only when what they show changes, not on every reading.
+- Keep Awake's closed-lid mode is told by macOS when the lid opens or closes, instead of looking once a second. A slow check remains as a backstop.
+- Background checks across the app now let macOS combine their wakeups with other activity, so they cost far less battery.
+
 ## 1.27.0 — 2026-11-19
 - Possible memory leaks (Beta Features, off until you turn it on): Anode watches for an app or process whose memory keeps growing and sends a notification saying a possible leak was found. It catches fast growth (about 50 MB a minute or more) within a few minutes, and slow growth (about 6 MB a minute or more, such as a browser that creeps up over days) after about two hours. It says "possible" because Anode can only see an app's memory size from outside.
 - Clicking that notification opens a window for the app: a graph of its memory, how much it grew and how fast, why Anode flagged it, and large Quit and Force Quit buttons. Nothing is ever quit automatically. Force Quit asks first, says how many processes it will end and that unsaved work may be lost, and a tool that lives inside an app's folder (such as a bundled Python) is quit on its own, not as the app.

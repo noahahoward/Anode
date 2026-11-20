@@ -110,7 +110,7 @@ final class MemoryWatchFeatureTests: XCTestCase {
         let r = try rig()
         let text = r.feature.pressureLabel.stringValue
         XCTAssertEqual(text, MemoryWatchFeature.pressureSummary)
-        for phrase in ["how full the Mac's memory is", "high memory pressure", "heavy swapping", "about half of your memory",
+        for phrase in ["how full the Mac's memory is", "high memory pressure", "orange", "red",
                        "naming the biggest app", "never quits anything by itself", "reads memory sizes only",
                        "no administrator privileges", "runs no commands", "one small system reading",
                        "permission to show notifications"] {

@@ -45,16 +45,28 @@ final class KeepAwakeController: NSObject {
     private var wakeToken: NSObjectProtocol?
     private var rightClickMonitor: Any?
     private var menuShownAt = Date.distantPast
-    private var lidTimer: Timer?
+    /// The slow safety poll that runs beside the lid notification while Always Stay Awake runs; see `updateLidWatch`.
+    private(set) var lidTimer: Timer?
+    /// One short retry, only while the dimmer says a refusal is still being retried.
+    private var lidRetryTimer: Timer?
     let dimmer: LidDimmer
+    private let lidNotifier: LidChangeNotifying
+
+    /// How often the safety poll looks at the lid in case a notification was missed. Never shorter than 20 s.
+    static let lidSafetyPollInterval: TimeInterval = 30
+    /// Wake-up coalescing slack for the safety poll: it is a net, not a deadline.
+    static let lidSafetyPollTolerance: TimeInterval = 10
+    /// How soon after a refused dim or restore the dimmer is asked again (what the old once-a-second poll did).
+    static let lidRetryInterval: TimeInterval = 1
 
     init(settings: Settings = .shared, defaults: UserDefaults = .standard, core: KeepAwake? = nil,
-         dimmer: LidDimmer? = nil) {
+         dimmer: LidDimmer? = nil, lidNotifier: LidChangeNotifying? = nil) {
         self.settings = settings
         self.defaults = defaults
         self.core = core ?? KeepAwake(assertions: IOKitSleepAssertions(), lid: PmsetClosedLidSleep(), defaults: defaults)
         self.dimmer = dimmer ?? LidDimmer(lid: IOKitLidState(), backlight: DisplayServicesBacklight(), defaults: defaults,
                                           log: { FeatureLog.append("keepawake.log", $0) })
+        self.lidNotifier = lidNotifier ?? IOKitLidChangeNotifier()
         super.init()
         // Read before anything below rewrites it: what was running when the app last quit (or died), still to run.
         let saved = Self.readSaved(defaults)
@@ -161,7 +173,9 @@ final class KeepAwakeController: NSObject {
     func shutdown() {
         quitting = true
         timer?.invalidate()
+        lidNotifier.stop()
         lidTimer?.invalidate()
+        lidRetryTimer?.invalidate()
         core.stop()
         dimmer.release()
     }
@@ -175,21 +189,42 @@ final class KeepAwakeController: NSObject {
         onChange?()
     }
 
-    /// While Always Stay Awake runs, look at the lid once a second so the panel goes dark when it shuts and comes
-    /// back when it opens. Any other state (or none) puts the brightness back and stops looking.
+    /// While Always Stay Awake runs, the panel goes dark when the lid shuts and comes back when it opens. The lid is
+    /// watched by a notification from the power-management root domain (nothing wakes the process until the lid moves),
+    /// with one slow poll beside it in case a message is ever missed. Any other state (or none) puts the brightness
+    /// back and stops all of it.
     private func updateLidWatch() {
         if core.session?.mode == .alwaysAwake {
             guard lidTimer == nil else { return }
-            let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.dimmer.poll() }
-            t.tolerance = 0.2
+            lidNotifier.start { [weak self] in self?.lidPoll() }
+            let t = Timer(timeInterval: Self.lidSafetyPollInterval, repeats: true) { [weak self] _ in self?.lidPoll() }
+            // A 30 s safety net with 10 s of slack: any lid change is handled at once by the notification.
+            t.tolerance = Self.lidSafetyPollTolerance
             RunLoop.main.add(t, forMode: .common)
             lidTimer = t
-            dimmer.poll()
+            lidPoll()
         } else {
+            lidNotifier.stop()
             lidTimer?.invalidate()
             lidTimer = nil
+            lidRetryTimer?.invalidate()
+            lidRetryTimer = nil
             dimmer.release()
         }
+    }
+
+    /// Looks at the lid now; if the panel refused to dim or to come back, looks again in a second (a panel that is
+    /// asleep can refuse, and the old once-a-second poll tried again every second until it worked).
+    private func lidPoll() {
+        lidRetryTimer?.invalidate()
+        lidRetryTimer = nil
+        dimmer.poll()
+        guard dimmer.wantsRetry, core.session?.mode == .alwaysAwake else { return }
+        let t = Timer(timeInterval: Self.lidRetryInterval, repeats: false) { [weak self] _ in self?.lidPoll() }
+        // A one-shot, only after a refusal; 0.25 s of slack changes nothing anyone can see.
+        t.tolerance = 0.25
+        RunLoop.main.add(t, forMode: .common)
+        lidRetryTimer = t
     }
 
     // ── Clicks ──────────────────────────────────────────────────────────────

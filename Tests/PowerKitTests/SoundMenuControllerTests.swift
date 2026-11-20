@@ -10,8 +10,14 @@ final class SoundMenuControllerTests: XCTestCase {
     // ── Fakes ───────────────────────────────────────────────────────────────
 
     final class FakeOutputs: AudioOutputs {
-        var devices: [OutputDevice] = [OutputDevice(id: "builtin", name: "MacBook Pro Speakers", kind: .speakers),
-                                       OutputDevice(id: "pods", name: "Test AirPods Pro", kind: .airpodsPro)]
+        var listed: [OutputDevice] = [OutputDevice(id: "builtin", name: "MacBook Pro Speakers", kind: .speakers),
+                                      OutputDevice(id: "pods", name: "Test AirPods Pro", kind: .airpodsPro)]
+        /// How many times the list was asked for: each is a full Core Audio listing (and an accessory-battery read) in the real one.
+        var deviceReads = 0
+        var devices: [OutputDevice] {
+            get { deviceReads += 1; return listed }
+            set { listed = newValue }
+        }
         var defaultDeviceID: String? = "pods"
         var volume = 0.5
         var muted = false
@@ -141,17 +147,25 @@ final class SoundMenuControllerTests: XCTestCase {
                               AXNode(role: "AXButton", description: "Sound Settings…")] : []))])
     }
 
+    /// A clock the test moves by hand.
+    final class FakeClock {
+        var now = Date(timeIntervalSince1970: 1_000_000)
+    }
+
+    /// How many times the controller read the accessory batteries.
+    private var batteryReads = 0
+
     private func rig(enabled: Bool = true, trusted: Bool = true, batteries: [AccessoryBattery]? = nil, native useNative: Bool = false, followUp: TimeInterval = 0,
-                     openBeta: @escaping () -> Void = {}) throws -> Rig {
+                     openBeta: @escaping () -> Void = {}, clock: FakeClock = FakeClock()) throws -> Rig {
         let (defaults, suite) = try TestDefaults.make(owner: "SoundMenuController", test: name)
         let settings = Settings(defaults: defaults)
         settings.soundMenuEnabled = enabled
         settings.soundMenuUsesNativeIcon = useNative
         let outputs = FakeOutputs(), driver = FakeDriver(), bar = FakeBar(), presenter = FakePresenter(), native = FakeNative()
         let list = batteries ?? batteriesBoth()
-        let c = SoundMenuController(settings: settings, outputs: outputs, driver: driver, batteries: { list },
+        let c = SoundMenuController(settings: settings, outputs: outputs, driver: driver, batteries: { [self] in batteryReads += 1; return list },
                                     accessibility: { trusted }, statusBar: bar, presenter: presenter, native: native, pollInterval: 0, followUpDelay: followUp,
-                                    openBetaFeatures: openBeta)
+                                    openBetaFeatures: openBeta, now: { clock.now })
         c.start()
         return Rig(controller: c, outputs: outputs, driver: driver, bar: bar, presenter: presenter, native: native, settings: settings,
                    cleanup: { c.stop(); TestDefaults.destroy(defaults, suite) })
@@ -188,6 +202,99 @@ final class SoundMenuControllerTests: XCTestCase {
         r.outputs.defaultDeviceID = "builtin"; r.outputs.volume = 0.9
         r.outputs.onChange?()
         XCTAssertEqual(r.bar.items[0].symbolName, "speaker.wave.3.fill")
+    }
+
+    // ── The background poll does not list the outputs again ─────────────────
+
+    func testASteadyPollListsNoOutputsAndReadsNoBatteries() throws {
+        let r = try rig(); defer { r.cleanup() }
+        let reads = r.outputs.deviceReads, batteries = batteryReads
+        for _ in 0..<20 { r.controller.refreshNativeIcon() }
+        XCTAssertEqual(r.outputs.deviceReads, reads, "the poll reuses the list: a listing is a full Core Audio walk plus the AirPods batteries")
+        XCTAssertEqual(batteryReads, batteries)
+        XCTAssertEqual(r.bar.items[0].symbolName, "airpods.pro")
+    }
+
+    func testWithMacOSsIconInUseThePollReadsNoOutputsAtAll() throws {
+        let r = try rig(native: true); defer { r.cleanup() }
+        XCTAssertTrue(r.bar.items.isEmpty, "macOS's icon is in use: Anode's has no symbol to set")
+        // Starting the controller lists the outputs once, for its change signature; the POLL must add none.
+        let reads = r.outputs.deviceReads
+        for _ in 0..<5 { r.controller.refreshNativeIcon() }
+        XCTAssertEqual(r.outputs.deviceReads, reads)
+    }
+
+    func testAChangeOfTheListIsListedOnceAndTheIconFollows() throws {
+        let r = try rig(); defer { r.cleanup() }
+        r.controller.refreshNativeIcon()
+        r.outputs.devices = [OutputDevice(id: "builtin", name: "MacBook Pro Speakers", kind: .speakers),
+                             OutputDevice(id: "pods", name: "Test AirPods Pro", kind: .headphones)]   // the same id, read differently
+        let reads = r.outputs.deviceReads
+        r.outputs.onChange?()
+        XCTAssertEqual(r.outputs.deviceReads, reads + 1, "one listing serves the icon and the check for a different list")
+        XCTAssertEqual(r.bar.items[0].symbolName, "headphones")
+        r.controller.refreshNativeIcon()
+        XCTAssertEqual(r.outputs.deviceReads, reads + 1, "and the polls after it use that listing")
+    }
+
+    func testADifferentOutputPlayingChangesTheIconWithoutAListing() throws {
+        let r = try rig(); defer { r.cleanup() }
+        let reads = r.outputs.deviceReads
+        r.outputs.defaultDeviceID = "builtin"; r.outputs.volume = 0.9     // no onChange: the poll alone
+        r.controller.refreshNativeIcon()
+        XCTAssertEqual(r.bar.items[0].symbolName, "speaker.wave.3.fill")
+        XCTAssertEqual(r.outputs.deviceReads, reads, "which one plays is a cheap read; the list it is looked up in is the one already held")
+        r.outputs.defaultDeviceID = "pods"
+        r.outputs.onChange?()
+        XCTAssertEqual(r.bar.items[0].symbolName, "airpods.pro")
+    }
+
+    func testTheListIsReadAgainOnceItIsOlderThanTheBound() throws {
+        let clock = FakeClock()
+        let r = try rig(clock: clock); defer { r.cleanup() }
+        // A change the Mac did not report (a battery entry that turned up late changes what kind the device is read as).
+        r.outputs.devices = [OutputDevice(id: "builtin", name: "MacBook Pro Speakers", kind: .speakers),
+                             OutputDevice(id: "pods", name: "Test AirPods Pro", kind: .airpodsMax)]
+        clock.now.addTimeInterval(SoundMenuController.iconDevicesMaxAge - 1)
+        r.controller.refreshNativeIcon()
+        XCTAssertEqual(r.bar.items[0].symbolName, "airpods.pro", "inside the bound the list already held is used")
+        clock.now.addTimeInterval(2)
+        let reads = r.outputs.deviceReads
+        r.controller.refreshNativeIcon()
+        XCTAssertEqual(r.outputs.deviceReads, reads + 1, "past it, one listing")
+        XCTAssertEqual(r.bar.items[0].symbolName, "airpods.max")
+        r.controller.refreshNativeIcon()
+        XCTAssertEqual(r.outputs.deviceReads, reads + 1, "and the bound starts again")
+    }
+
+    func testAClockSetBackDoesNotKeepAListingForever() throws {
+        let clock = FakeClock()
+        let r = try rig(clock: clock); defer { r.cleanup() }
+        clock.now.addTimeInterval(-3600)
+        let reads = r.outputs.deviceReads
+        r.controller.refreshNativeIcon()
+        XCTAssertEqual(r.outputs.deviceReads, reads + 1)
+    }
+
+    func testOpeningTheMenuReadsTheOutputsAndBatteriesFresh() throws {
+        let r = try rig(); defer { r.cleanup() }
+        r.controller.refreshNativeIcon()           // the poll has a list in hand
+        r.outputs.devices.append(OutputDevice(id: "usb", name: "USB Speakers", kind: .speakers))   // not reported to the controller
+        let reads = r.outputs.deviceReads, batteries = batteryReads
+        r.controller.openMenu()
+        XCTAssertGreaterThan(r.outputs.deviceReads, reads)
+        XCTAssertGreaterThan(batteryReads, batteries)
+        XCTAssertTrue(r.presenter.shown[0].devices.contains { $0.name == "USB Speakers" })
+    }
+
+    func testAnIconOfOurOwnThatComesBackReadsTheOutputsAfresh() throws {
+        let r = try rig(native: true); defer { r.cleanup() }
+        r.native.frame = nil
+        r.controller.refreshNativeIcon()
+        r.outputs.defaultDeviceID = "builtin"
+        r.controller.refreshNativeIcon()    // gone twice running: Anode's icon is made
+        XCTAssertEqual(r.bar.items.count, 1)
+        XCTAssertEqual(r.bar.items[0].symbolName, "speaker.wave.2.fill")
     }
 
     func testOpeningTheMenuClosesAPanelOfMacOSThePersonHadOpen() throws {

@@ -83,6 +83,8 @@ final class LiveHardDrain: HardDraining {
             now: Date.init,
             every: { interval, work in
                 let timer = Timer(timeInterval: interval, repeats: true) { _ in work() }
+                // Only while a drain runs; it looks at the battery, so a look a quarter of an interval late is the same look.
+                timer.tolerance = interval / 4
                 RunLoop.main.add(timer, forMode: .common)
                 return { timer.invalidate() }
             })

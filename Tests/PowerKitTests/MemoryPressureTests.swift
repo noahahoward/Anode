@@ -13,7 +13,9 @@ private func reading(_ level: Int32? = 1, swap: UInt64 = 0, total: UInt64 = 64 *
 /// One tracker fed readings on an injected clock, remembering every verdict and when it came.
 private struct PressureFeeder {
     var tracker = PressureTracker()
-    var rules = PressureRules.standard
+    /// The first version's rules (a minute of orange, swap and one big app as triggers) so those stay tested; the new
+    /// pressure-only defaults have their own tests below.
+    var rules = PressureRules.everything
     var found: [(t: Double, verdict: PressureVerdict)] = []
 
     mutating func feed(_ r: SystemMemoryReading, top: UInt64 = gib, at t: Double) {
@@ -420,6 +422,7 @@ private final class PressureRig {
                             discover: { m.discover() },
                             startSeconds: { Double($0) })
         watch.onFinding = { [unowned self] f in self.findings.append(f) }
+        watch.pressureRules = .everything
     }
 
     /// Brave (a main process and two helpers, 38 GiB in all), Safari (4 GiB) and a tool (2 GiB).
@@ -693,5 +696,62 @@ final class MemoryWatchPressureTests: XCTestCase {
         XCTAssertEqual(r.watch.pressureFindingCount, 0)
         r.run(criticalReading, ticks: 4)
         XCTAssertEqual(r.findings.count, 2, "its cooldown went with the reset")
+    }
+}
+
+
+/// The defaults follow macOS's own pressure graph and nothing else: orange held two minutes warns, red held 15 seconds is
+/// critical, and neither swap nor one big app raises an alert by itself.
+final class PressureOnlyDefaultsTests: XCTestCase {
+
+    private func feeder() -> PressureFeeder2 { PressureFeeder2() }
+
+    func testTheDefaultsWatchOnlyThePressureLevel() {
+        let r = PressureRules.standard
+        XCTAssertFalse(r.watchesSwap)
+        XCTAssertFalse(r.watchesDominantApp)
+        XCTAssertEqual(r.warningSeconds, 120)
+        XCTAssertEqual(r.criticalSeconds, 15)
+    }
+
+    /// A build or a test run: orange for a minute and a half, then back to green. Nothing to say.
+    func testOrangeForAMinuteAndAHalfIsNotWarnedAbout() {
+        var f = feeder()
+        f.hold(reading(2), from: 0, through: 100)
+        f.hold(reading(1), from: 105, through: 400)
+        XCTAssertTrue(f.found.isEmpty)
+    }
+
+    func testOrangeHeldTwoMinutesWarnsOnceAsAWarning() {
+        var f = feeder()
+        f.hold(reading(2), from: 0, through: 300)
+        XCTAssertEqual(f.found.map(\.verdict.reason), [.warning])
+        XCTAssertEqual(f.found.first?.t ?? 0, 120, accuracy: 0.001)
+    }
+
+    func testRedHeldFifteenSecondsIsCritical() {
+        var f = feeder()
+        f.hold(reading(4), from: 0, through: 60)
+        XCTAssertEqual(f.found.map(\.verdict.reason), [.critical])
+        XCTAssertEqual(f.found.first?.t ?? 0, 15, accuracy: 0.001)
+    }
+
+    /// Normal pressure never alerts, however much swap is in use or however big one app is.
+    func testSwapAndOneBigAppAloneNeverAlert() {
+        var f = feeder()
+        f.hold(reading(1, swap: 40 * gib, total: 64 * gib), top: 50 * gib, from: 0, through: 3600)
+        XCTAssertTrue(f.found.isEmpty, "the pressure level was green the whole time")
+    }
+}
+
+private struct PressureFeeder2 {
+    var tracker = PressureTracker()
+    var found: [(t: Double, verdict: PressureVerdict)] = []
+    mutating func hold(_ r: SystemMemoryReading, top: UInt64 = gib, from: Double, through end: Double, step: Double = 5) {
+        var t = from
+        while t <= end {
+            if let v = tracker.ingest(r, topAppBytes: top, at: t) { found.append((t: t, verdict: v)) }
+            t += step
+        }
     }
 }

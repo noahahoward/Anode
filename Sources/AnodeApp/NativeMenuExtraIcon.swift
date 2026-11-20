@@ -42,7 +42,16 @@ final class NativeMenuExtraIcon: NativeIconHosting {
     /// The feature log the lines about this icon go to.
     private let logName: String
 
-    init(identifier: String, logName: String) { self.identifier = identifier; self.logName = logName }
+    /// The Accessibility reads and the Launch Services lookup, replaceable so the look can be tested without a real menu bar.
+    private let reads: MenuBarAXReads
+    /// The elements the last look found, so a poll on the steady path reads the icon's own frame instead of walking the bar again.
+    /// Touched under `cacheLock` (held only to copy it in or out, never across an Accessibility call).
+    private let cacheLock = NSLock()
+    private var cache: FoundIcon?
+
+    init(identifier: String, logName: String, reads: MenuBarAXReads = .live) {
+        self.identifier = identifier; self.logName = logName; self.reads = reads
+    }
 
     static func sound() -> NativeMenuExtraIcon { NativeMenuExtraIcon(identifier: soundIdentifier, logName: "sound-menu.log") }
     static func battery() -> NativeMenuExtraIcon { NativeMenuExtraIcon(identifier: batteryIdentifier, logName: "battery-menu.log") }
@@ -77,30 +86,67 @@ final class NativeMenuExtraIcon: NativeIconHosting {
 
     // ── The icon ────────────────────────────────────────────────────────────
 
+    /// Where the icon was last found: the process that draws the bar, and the elements the frames are read from.
+    private struct FoundIcon {
+        let pid: pid_t
+        let item: AXUIElement
+        let group: AXUIElement
+    }
+
+    private func cached() -> FoundIcon? { cacheLock.lock(); defer { cacheLock.unlock() }; return cache }
+    private func setCache(_ found: FoundIcon?) { cacheLock.lock(); cache = found; cacheLock.unlock() }
+
+    /// What the click tap last learned: the icon's frame, the bar-tall item around it, and the process whose elements count.
+    var tapState: (frame: CGRect?, bar: CGRect?, pid: pid_t) {
+        lock.lock(); defer { lock.unlock() }
+        return (cachedFrame, cachedBar, trustedPid)
+    }
+
     func currentFrame() -> CGRect? {
-        guard AXIsProcessTrusted(),
-              let pid = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.MenuBarAgent").first?.processIdentifier
-        else { return remember(nil, pid: 0) }
-        let agent = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(agent, 0.3)
-        guard let bar = Self.attribute(agent, "AXExtrasMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() else { return remember(nil, pid: 0) }
-        let groups = (Self.attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement]) ?? []   // type checked above
+        guard reads.isTrusted() else { setCache(nil); return remember(nil, pid: 0) }
+        // The steady path: the elements found last time are still the icon. Three Accessibility reads (is it still the icon, where is
+        // it, where is the item around it) and no Launch Services lookup. Anything else (the process gone, an element that no longer
+        // answers or no longer carries the identifier, a frame that is not there or empty) is one full look, as before.
+        if let found = cached(), reads.isAlive(found.pid),
+           readIdentifier(found.item) == identifier,
+           let frame = Self.rect(reads.attribute(found.item, "AXFrame")), !frame.isEmpty,
+           let itemFrame = Self.rect(reads.attribute(found.group, "AXFrame")) {
+            let shown = NativeIconClickGate.shownPosition(icon: frame, bar: itemFrame.isEmpty ? nil : itemFrame)
+            return remember(shown.icon, pid: found.pid, bar: shown.bar)
+        }
+        return lookThroughTheBar()
+    }
+
+    /// The full look: find MenuBarAgent, walk its bar for the item with this identifier, and remember the elements it was found in.
+    private func lookThroughTheBar() -> CGRect? {
+        func missing() -> CGRect? { setCache(nil); return remember(nil, pid: 0) }
+        guard let pid = reads.agentPid() else { return missing() }
+        let agent = reads.application(pid)
+        guard let bar = reads.attribute(agent, "AXExtrasMenuBar"), CFGetTypeID(bar) == AXUIElementGetTypeID() else { return missing() }
+        let groups = (reads.attribute(bar as! AXUIElement, kAXChildrenAttribute) as? [AXUIElement]) ?? []   // type checked above
         for group in groups {
-            for item in (Self.attribute(group, kAXChildrenAttribute) as? [AXUIElement]) ?? [] where Self.identifier(of: item) == identifier {
-                var r = CGRect.zero
-                if let v = Self.attribute(item, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &r) }   // type checked
-                var itemFrame = CGRect.zero
-                if let v = Self.attribute(group, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &itemFrame) }   // type checked
+            for item in (reads.attribute(group, kAXChildrenAttribute) as? [AXUIElement]) ?? [] where readIdentifier(item) == identifier {
+                let r = Self.rect(reads.attribute(item, "AXFrame")) ?? .zero
+                let itemFrame = Self.rect(reads.attribute(group, "AXFrame")) ?? .zero
+                setCache(r.isEmpty ? nil : FoundIcon(pid: pid, item: item, group: group))
                 if r.isEmpty { return remember(nil, pid: pid) }
-                // With the menu bar set to hide the frames are the hidden bar's, above the top edge: the frame kept is where they are when it shows.
                 let shown = NativeIconClickGate.shownPosition(icon: r, bar: itemFrame.isEmpty ? nil : itemFrame)
                 return remember(shown.icon, pid: pid, bar: shown.bar)
             }
         }
+        setCache(nil)
         return remember(nil, pid: 0)
     }
 
-    private static func attribute(_ e: AXUIElement, _ name: String) -> CFTypeRef? {
+    private func readIdentifier(_ e: AXUIElement) -> String { reads.attribute(e, "AXIdentifier").map { "\($0)" } ?? "" }
+
+    fileprivate static func rect(_ v: CFTypeRef?) -> CGRect? {
+        guard let v, CFGetTypeID(v) == AXValueGetTypeID() else { return nil }
+        var r = CGRect.zero
+        return AXValueGetValue(v as! AXValue, .cgRect, &r) ? r : nil   // type checked
+    }
+
+    fileprivate static func attribute(_ e: AXUIElement, _ name: String) -> CFTypeRef? {
         var v: CFTypeRef?
         return AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success ? v : nil
     }
@@ -231,6 +277,31 @@ final class NativeMenuExtraIcon: NativeIconHosting {
         var r = CGRect.zero
         if let v = Self.attribute(icon, "AXFrame"), CFGetTypeID(v) == AXValueGetTypeID() { AXValueGetValue(v as! AXValue, .cgRect, &r) }   // type checked
         return r.isEmpty ? nil : r
+    }
+}
+
+/// The reads a look at the menu bar is made of, so a test can stand in a menu bar that counts them.
+struct MenuBarAXReads {
+    var isTrusted: () -> Bool
+    /// Launch Services: the process that draws macOS's menu bar items. Costs a synchronous lookup, so only a full look asks.
+    var agentPid: () -> pid_t?
+    /// Whether a process is still there (a signal that sends nothing).
+    var isAlive: (pid_t) -> Bool
+    var application: (pid_t) -> AXUIElement
+    /// One Accessibility read; nil for any error.
+    var attribute: (AXUIElement, String) -> CFTypeRef?
+
+    static var live: MenuBarAXReads {
+        MenuBarAXReads(
+            isTrusted: { AXIsProcessTrusted() },
+            agentPid: { NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.MenuBarAgent").first?.processIdentifier },
+            isAlive: { kill($0, 0) == 0 || errno == EPERM },
+            application: { pid in
+                let agent = AXUIElementCreateApplication(pid)
+                AXUIElementSetMessagingTimeout(agent, 0.3)
+                return agent
+            },
+            attribute: { NativeMenuExtraIcon.attribute($0, $1) })
     }
 }
 

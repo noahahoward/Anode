@@ -163,10 +163,11 @@ final class MenuBarHiderRuntime {
 
         if controller.isPillOpen && !finished {
             if timer == nil {
+                // Only while the pill is open; 0.2 s of slack on a 1 s housekeeping tick is not visible.
                 timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                     self?.controller.tick()
                     self?.pillTick()
-                }
+                }.coalescing(tolerance: 0.2)
             }
         } else {
             timer?.invalidate()

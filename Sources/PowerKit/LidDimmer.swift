@@ -75,43 +75,60 @@ public final class LidDimmer {
     static let darkThreshold: Float = 0.02
     /// A closed lid's dimming is tried this many times per closing before giving up (a sleeping panel can refuse).
     static let maxDimAttempts = 5
-    /// While the lid is open the brightness to restore is re-read every this many polls.
+    /// While the lid is open the brightness to restore is re-read every this many polls...
     static let refreshEvery = 10
+    /// ...or, since polls now come on a lid change and as a slow safety net rather than every second, whenever a poll
+    /// finds the last read this many seconds old.
+    static let refreshSeconds: TimeInterval = 10
 
     private let lid: LidStateReader
     private let backlight: BacklightControl
     private let defaults: UserDefaults
     private let ownBrightness: OwnBrightness
     private let log: (String) -> Void
+    private let now: () -> Date
 
     private var lastOpenBrightness: Float?
+    private var lastRefreshAt: Date?
     private var polls = 0
     private var dimAttempts = 0
 
     public init(lid: LidStateReader, backlight: BacklightControl, defaults: UserDefaults = .standard,
-                ownBrightness: OwnBrightness = .shared, log: @escaping (String) -> Void = { _ in }) {
+                ownBrightness: OwnBrightness = .shared, log: @escaping (String) -> Void = { _ in },
+                now: @escaping () -> Date = Date.init) {
         self.lid = lid
         self.backlight = backlight
         self.defaults = defaults
         self.ownBrightness = ownBrightness
         self.log = log
+        self.now = now
     }
+
+    /// True after a `poll()` that could not finish its job (a panel that refused to dim, or to be restored) and that
+    /// should be tried again soon rather than at the next lid change: the caller schedules one short retry.
+    public private(set) var wantsRetry = false
 
     /// The brightness waiting to be put back, if the panel is dimmed by us.
     public var saved: Float? { defaults.object(forKey: Self.savedKey) == nil ? nil : defaults.float(forKey: Self.savedKey) }
     public var isDimmed: Bool { saved != nil }
 
-    /// Called about once a second while Always Stay Awake is running.
+    /// Called when the lid changes while Always Stay Awake is running, once more every half a minute as a safety net
+    /// in case a change was missed, and again by the caller while `wantsRetry` says a refusal is still being retried.
     public func poll() {
+        wantsRetry = false
         guard let closed = lid.isClosed() else { return }
         if closed {
             guard !isDimmed else { return }
             dim()
         } else {
             dimAttempts = 0
-            if isDimmed { restore(); return }
+            if isDimmed { wantsRetry = !restore(); return }
             polls += 1
-            if lastOpenBrightness == nil || polls % Self.refreshEvery == 0 { lastOpenBrightness = backlight.brightness() }
+            let stale = lastRefreshAt.map { now().timeIntervalSince($0) >= Self.refreshSeconds } ?? true
+            if lastOpenBrightness == nil || polls % Self.refreshEvery == 0 || stale {
+                lastOpenBrightness = backlight.brightness()
+                lastRefreshAt = now()
+            }
         }
     }
 
@@ -129,6 +146,7 @@ public final class LidDimmer {
         dimAttempts += 1
         guard let current = lastOpenBrightness ?? backlight.brightness() else {
             log("lid closed: could not read the brightness, leaving it")
+            wantsRetry = dimAttempts < Self.maxDimAttempts
             return
         }
         guard current > Self.darkThreshold else { return }
@@ -143,6 +161,7 @@ public final class LidDimmer {
             // Not an owner of a screen it did not lower, or the other feature's `forget` would never get the value back.
             _ = ownBrightness.forget(Self.ownerName)
             log("lid closed: the panel refused brightness 0 (attempt \(dimAttempts))")
+            wantsRetry = dimAttempts < Self.maxDimAttempts
         }
     }
 

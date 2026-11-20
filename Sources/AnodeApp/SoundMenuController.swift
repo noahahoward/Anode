@@ -111,14 +111,24 @@ final class SoundMenuController {
     private var outputsSignature = ""
     /// How many looks in a row found macOS's own icon missing.
     private var missedLooks = 0
+    /// The outputs as the icon last read them, and when. The icon only needs the kind of the one playing, and the list almost never
+    /// changes, so the background poll reuses this instead of listing every device (and reading the AirPods batteries) every few
+    /// seconds. Every change the Mac reports (`outputs.onChange`) and everything the person does reads the list afresh and
+    /// replaces it; the age limit below catches what the Mac does not report (a battery entry that turns up after the device did).
+    private var iconDevices: [OutputDevice]?
+    private var iconDevicesAt = Date.distantPast
+    /// The longest the poll goes on using the outputs it already has: 30 seconds. Past it the next poll lists them again.
+    static let iconDevicesMaxAge: TimeInterval = 30
+    private let now: () -> Date
     /// What the gear does: shows Beta Features, where this menu is switched.
     private let openBetaFeatures: () -> Void
 
     init(settings: Settings, outputs: AudioOutputs, driver: SystemPanelDriving, batteries: @escaping () -> [AccessoryBattery],
          accessibility: @escaping () -> Bool, statusBar: StatusItemHosting, presenter: SoundMenuPresenting,
-         native: NativeIconHosting, pollInterval: TimeInterval = 3, followUpDelay: TimeInterval = 1.5,
-         openBetaFeatures: @escaping () -> Void = {}) {
+         native: NativeIconHosting, pollInterval: TimeInterval = 10, followUpDelay: TimeInterval = 1.5,
+         openBetaFeatures: @escaping () -> Void = {}, now: @escaping () -> Date = Date.init) {
         self.openBetaFeatures = openBetaFeatures
+        self.now = now
         self.settings = settings; self.outputs = outputs; self.driver = driver; self.batteries = batteries
         self.accessibility = accessibility; self.statusBar = statusBar; self.presenter = presenter
         self.native = native; self.pollInterval = pollInterval; self.followUpDelay = followUpDelay
@@ -195,10 +205,12 @@ final class SoundMenuController {
                 item = handle
             }
         }
-        refreshIcon()
+        refreshIcon(cached: true)
         pollTimer?.invalidate(); pollTimer = nil
         if settings.soundMenuUsesNativeIcon && pollInterval > 0 {
+            // 1 s of slack on 3 s: the icon's place only changes when other menu bar items change width, and a press looks again.
             pollTimer = Timer.scheduledTimer(withTimeInterval: pollInterval, repeats: true) { [weak self] _ in self?.refreshNativeIcon() }
+                .coalescing(tolerance: pollInterval / 3)
         }
     }
 
@@ -215,6 +227,7 @@ final class SoundMenuController {
         installed = false
         reading = nil
         notice = nil
+        iconDevices = nil
     }
 
     private func nativeClicked(_ frame: CGRect) {
@@ -307,16 +320,18 @@ final class SoundMenuController {
         }
     }
 
-    /// The outputs there are and which is playing: what makes macOS's panel worth reading again.
-    private func currentOutputsSignature() -> String {
-        (outputs.devices.map(\.id).sorted() + ["default=\(outputs.defaultDeviceID ?? "")"]).joined(separator: "|")
+    /// The outputs there are and which is playing: what makes macOS's panel worth reading again. `devices`: a list just read.
+    private func currentOutputsSignature(of devices: [OutputDevice]? = nil) -> String {
+        ((devices ?? outputs.devices).map(\.id).sorted() + ["default=\(outputs.defaultDeviceID ?? "")"]).joined(separator: "|")
     }
 
     private func outputsChanged() {
-        refreshIcon()
+        // One listing serves the icon and the signature below.
+        let devices = outputs.devices
+        refreshIcon(devices: devices)
         // The volume changes this callback too (a drag on the slider is dozens of them): macOS's panel is read again only when the
         // outputs or the one playing changed.
-        let signature = currentOutputsSignature()
+        let signature = currentOutputsSignature(of: devices)
         let outputsMoved = signature != outputsSignature
         outputsSignature = signature
         guard presenter.isOpen else { return }
@@ -336,9 +351,22 @@ final class SoundMenuController {
         if presenter.isOpen { presenter.update(model) }
     }
 
-    private func refreshIcon() {
-        let defaultKind = outputs.devices.first { $0.id == outputs.defaultDeviceID }?.kind ?? .speakers
-        item?.symbolName = SoundIcon.symbol(volume: outputs.volume, muted: outputs.muted, output: defaultKind)
+    /// Sets the symbol of Anode's own icon. `devices`: a list just read. `cached` (the background poll): the list of the last
+    /// look is used while it is younger than `iconDevicesMaxAge`; every other caller lists the outputs afresh.
+    private func refreshIcon(devices given: [OutputDevice]? = nil, cached: Bool = false) {
+        // With macOS's own icon in use there is no symbol to set: nothing is read for it.
+        guard let item else { iconDevices = nil; return }
+        var list = given
+        var reused = false
+        if list == nil, cached, let kept = iconDevices {
+            let age = now().timeIntervalSince(iconDevicesAt)
+            if age >= 0 && age < Self.iconDevicesMaxAge { list = kept; reused = true }
+        }
+        let devices = list ?? outputs.devices
+        if !reused { iconDevices = devices; iconDevicesAt = now() }
+        let defaultID = outputs.defaultDeviceID
+        let defaultKind = devices.first { $0.id == defaultID }?.kind ?? .speakers
+        item.symbolName = SoundIcon.symbol(volume: outputs.volume, muted: outputs.muted, output: defaultKind)
     }
 
     // ── What the person presses ─────────────────────────────────────────────

@@ -153,7 +153,9 @@ final class KeyboardCleaner {
         windows.show(hint: hint, on: screens())
         holdingAssertion = assertions.hold(reason: "Anode keyboard cleaner")
         isActive = true
+        // Only while cleaning; the tick checks that Accessibility is still granted, so 0.2 s of slack changes nothing.
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.tick() }
+            .coalescing(tolerance: 0.2)
         log("started")
         onChange?()
         return .started
