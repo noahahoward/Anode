@@ -18,6 +18,18 @@ import PowerKit
 /// Where the strip goes. Pure so the arithmetic is testable without a display.
 /// How often the backdrop that follows the windows looks at them.
 enum MenuBarBackdropPolling {
+    /// How often the strip looks again at the window list on its own, when nothing announced a change (nil: not at all). Every 2 s while a
+    /// bar is hidden for a full-screen window (a borderless window leaving posts nothing). While "show on desktop" is off, an app opening,
+    /// closing or minimizing a window with no change of the app in front is not announced either: that was every second, forever, and
+    /// the window list (a WindowServer round trip of every window) was the largest main-thread cost of an idle Anode. Every 5 s now, with
+    /// the events that can change the answer (an app activating, launching, quitting, hiding, a Space or screen change) each followed by a
+    /// short burst of fast looks (`burstDelays`), which is where a change is nearly always seen.
+    static func watchInterval(showOnDesktop: Bool, hiddenCount: Int) -> TimeInterval? {
+        showOnDesktop ? (hiddenCount > 0 ? 2 : nil) : 5
+    }
+    /// Seconds after an event at which the strip looks again.
+    static let burstDelays: [TimeInterval] = [0.4, 1.0, 2.0, 3.5]
+
     /// Once a second normally. While Ultra Low Power Mode is on, every five: the mode is for a Mac that is mostly left alone, and
     /// a wake-up each second for a strip that rarely changes is what it is there to stop. Slowed and not stopped, because the look
     /// is what notices a window going under the bar, and a stale strip can make the menu bar unreadable.
@@ -547,6 +559,11 @@ final class MenuBarBackdrop {
         workspaceObservers.append(ws.addObserver(
             forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil, queue: .main) { [weak self] _ in self?.scheduleRefresh() })
+        // An app starting, quitting, hiding or showing opens or closes its windows with no change of the app in front.
+        for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification,
+                     NSWorkspace.didHideApplicationNotification, NSWorkspace.didUnhideApplicationNotification] {
+            workspaceObservers.append(ws.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.scheduleRefresh() })
+        }
         workspaceObservers.append(ws.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil, queue: .main) { [weak self] _ in
@@ -806,23 +823,23 @@ final class MenuBarBackdrop {
     /// every 2 s while a bar is hidden for a full-screen window (a borderless window leaving posts
     /// nothing), and every second while "show on desktop" is off (an app opening a window anywhere
     /// is not announced either). A query is 0.3 ms. Neither timer runs the rest of the time: a
-    /// timer for something that is not happening is a wakeup for nothing.
+    /// timer for something that is not happening is a wakeup for nothing. (See `MenuBarBackdropPolling.watchInterval`.)
     private func updateWatch(hiddenCount: Int) {
-        let wanted: TimeInterval? = settings.menuBarBackdropShowOnDesktop ? (hiddenCount > 0 ? 2 : nil) : 1
+        let wanted = MenuBarBackdropPolling.watchInterval(showOnDesktop: settings.menuBarBackdropShowOnDesktop, hiddenCount: hiddenCount)
         guard wanted != watchInterval else { return }
         fullScreenWatch?.invalidate()
         fullScreenWatch = nil
         watchInterval = wanted
         guard let wanted else { return }
         let timer = Timer(timeInterval: wanted, repeats: true) { [weak self] _ in self?.refresh() }
-        timer.tolerance = wanted / 4
+        timer.tolerance = wanted / 2
         RunLoop.main.add(timer, forMode: .common)
         fullScreenWatch = timer
     }
 
     private func scheduleRefresh() {
         refresh()
-        for delay in [0.4, 1.0] {
+        for delay in MenuBarBackdropPolling.burstDelays {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.refresh() }
         }
     }

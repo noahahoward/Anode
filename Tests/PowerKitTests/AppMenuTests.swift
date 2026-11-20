@@ -744,6 +744,23 @@ final class MenuBarBackdropModeTests: XCTestCase {
     }
 }
 
+/// The strip's own looks at the window list: the largest main-thread cost of an idle Anode was a look every second, forever.
+final class MenuBarBackdropWatchTests: XCTestCase {
+    func testWithShowOnDesktopOnNothingLooksUnlessABarIsHiddenForAFullScreenWindow() {
+        XCTAssertNil(MenuBarBackdropPolling.watchInterval(showOnDesktop: true, hiddenCount: 0))
+        XCTAssertEqual(MenuBarBackdropPolling.watchInterval(showOnDesktop: true, hiddenCount: 1), 2)
+    }
+
+    /// With it off, a change nobody announces is looked for slowly, and the events that can cause one are followed by a few quick looks.
+    func testWithShowOnDesktopOffTheLookIsEveryFiveSecondsAndEventsAreFollowedByBursts() {
+        XCTAssertEqual(MenuBarBackdropPolling.watchInterval(showOnDesktop: false, hiddenCount: 0), 5)
+        XCTAssertEqual(MenuBarBackdropPolling.watchInterval(showOnDesktop: false, hiddenCount: 2), 5)
+        XCTAssertEqual(MenuBarBackdropPolling.burstDelays, MenuBarBackdropPolling.burstDelays.sorted())
+        XCTAssertLessThan(MenuBarBackdropPolling.burstDelays.first!, 1, "the first look after an event is quick")
+        XCTAssertLessThan(MenuBarBackdropPolling.burstDelays.last!, 5, "and the burst ends before the slow look would have come")
+    }
+}
+
 final class MenuBarBackdropSeamTests: XCTestCase {
     private let panel = NSRect(x: 0, y: 0, width: 1800, height: 1169)
 
