@@ -1270,6 +1270,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             // no app — WindowServer and the like — when daemons are switched off.
             .filter { showDaemons || $0.isApp }
             .filter { ProcessRowBuilder.isNotable($0, floor_pctHr: floor) }
+        // The "Possible Memory Leak" badges, from this refresh only and only while the window is on screen. With Memory
+        // Watch off there are no findings and this is one empty-array check.
+        if main.window.isVisible { main.updateLeakBadges(rows: rows) }
         sortRows()
 
         refreshTable()
@@ -3092,7 +3095,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
         for column in main.table.tableColumns {
             let id = column.identifier.rawValue
-            guard id != ProcessColumns.spacerID else { continue }
+            guard id != ProcessColumns.spacerID, id != LeakBadge.columnID else { continue }
 
             var widest = (column.title.uppercased() as NSString)
                 .size(withAttributes: Self.headerAttributes).width
@@ -3146,6 +3149,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             v.identifier = col.identifier
             return v
         }
+        if id == LeakBadge.columnID {
+            let badge = (tv.makeView(withIdentifier: col.identifier, owner: self) as? LeakBadgeCellView)
+                ?? LeakBadgeCellView()
+            badge.identifier = col.identifier
+            badge.configure(finding: main.leakBadges.finding(for: rows[row]), name: rows[row].name)
+            return badge
+        }
         let cell: ProcessCellView
         if let reused = tv.makeView(withIdentifier: col.identifier, owner: self)
             as? ProcessCellView {
@@ -3192,8 +3202,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             guard row >= 0, row < rows.count else { return }
             for (column, col) in main.table.tableColumns.enumerated() {
                 let id = col.identifier.rawValue
-                guard id != ProcessColumns.spacerID,
-                      let cell = rowView.view(atColumn: column) as? ProcessCellView
+                guard id != ProcessColumns.spacerID else { continue }
+                if id == LeakBadge.columnID {
+                    (rowView.view(atColumn: column) as? LeakBadgeCellView)?.configure(
+                        finding: main.leakBadges.finding(for: rows[row]), name: rows[row].name)
+                    continue
+                }
+                guard let cell = rowView.view(atColumn: column) as? ProcessCellView
                 else { continue }
                 configure(cell, with: rows[row], id: id)
             }

@@ -10,6 +10,8 @@ private final class FakeMachine {
         var start: UInt64
         var footprint: UInt64
         var path: String
+        /// Total CPU time so far in nanoseconds, a counter that only goes up (unless a test resets it).
+        var cpuNanos: UInt64 = 0
     }
 
     var procs: [pid_t: Proc] = [:]
@@ -27,14 +29,16 @@ private final class FakeMachine {
         pathReads.append(pid)
         return procs[pid]?.path ?? ""
     }
-    func footprintOf(_ pid: pid_t) -> (start: UInt64, footprint: UInt64)? {
+    /// The CPU counter of one process, in nanoseconds.
+    func setCPU(_ pid: pid_t, nanos: UInt64) { procs[pid]?.cpuNanos = nanos }
+    func footprintOf(_ pid: pid_t) -> (start: UInt64, footprint: UInt64, cpuNanos: UInt64)? {
         footprintReads += 1
         guard let p = procs[pid] else { return nil }
-        return (start: p.start, footprint: p.footprint)
+        return (start: p.start, footprint: p.footprint, cpuNanos: p.cpuNanos)
     }
-    func discover() -> [(pid: pid_t, start: UInt64, footprint: UInt64)] {
+    func discover() -> [(pid: pid_t, start: UInt64, footprint: UInt64, cpuNanos: UInt64)] {
         discoverCalls += 1
-        return procs.map { (pid: $0.key, start: $0.value.start, footprint: $0.value.footprint) }
+        return procs.map { (pid: $0.key, start: $0.value.start, footprint: $0.value.footprint, cpuNanos: $0.value.cpuNanos) }
             .sorted { $0.pid < $1.pid }
     }
 }
@@ -849,6 +853,98 @@ final class MemoryWatchTests: XCTestCase {
         XCTAssertNil(r.watch.slowPhase(of: key(40)))
     }
 
+    // MARK: CPU
+
+    /// The leak is flagged while the process is nearly idle (3 % of a core), and the finding says so; busy at 80 % of a
+    /// core, the same growth is work and is never flagged by the fast tier. Failing here means a long test run or build is
+    /// reported as a leak, or a real leak of an idle process is missed.
+    func testTheFastTierFlagsAnIdleLeakWithItsCPUAndNotABusyOne() {
+        let idle = WatchRig()
+        idle.machine.add(100, 300, path: leakyPath)
+        idle.run(for: 200) { t in
+            idle.machine.setMiB(100, 300 + (t - 1000))
+            idle.machine.setCPU(100, nanos: UInt64(0.03 * (t - 1000) * 1e9))
+        }
+        XCTAssertEqual(idle.findings.count, 1)
+        guard let f = idle.findings.first else { return }
+        XCTAssertEqual(f.tier, .fast)
+        XCTAssertEqual(f.cpuFraction ?? -1, 0.03, accuracy: 0.002)
+        XCTAssertTrue(f.explanation.contains("It used about 3% of a core while its memory grew"), f.explanation)
+
+        let busy = WatchRig()
+        busy.machine.add(100, 300, path: leakyPath)
+        busy.run(for: 200) { t in
+            busy.machine.setMiB(100, 300 + (t - 1000))
+            busy.machine.setCPU(100, nanos: UInt64(0.8 * (t - 1000) * 1e9))
+        }
+        XCTAssertTrue(busy.findings.isEmpty)
+        XCTAssertNotEqual(busy.watch.phase(of: key(100)), .reported)
+    }
+
+    /// A reading that carries no CPU (a counter that stays at zero is still a reading) is judged as always: the machine
+    /// fake that never sets a CPU gives a finding whose fraction is zero, not nil, and the explanation says "under 1%".
+    func testACPUCounterThatNeverMovesReadsAsIdle() {
+        let r = WatchRig()
+        r.machine.add(100, 300, path: leakyPath)
+        r.run(for: 200) { t in r.machine.setMiB(100, 300 + (t - 1000)) }
+        XCTAssertEqual(r.findings.first?.cpuFraction, 0)
+        XCTAssertTrue(r.findings.first?.explanation.contains("It used under 1% of a core") ?? false)
+    }
+
+    /// The CPU of a process read from a full sweep is converted from mach time units to nanoseconds, so the same gate holds
+    /// whether the feed is a sweep or a light tick: busy through sweeps is gated, quiet through sweeps is flagged.
+    func testAFullSweepCarriesTheCPUToo() {
+        func play(_ fraction: Double) -> [Finding] {
+            let r = WatchRig()
+            var t = 1000.0
+            while t < 1200 {
+                let nanos = fraction * (t - 1000) * 1e9
+                let units = UInt64((nanos / MachTime.nanosPerUnit).rounded())
+                let proc = makeProcess(pid: 100, start: 1, nJ: 0, path: leakyPath, cpu_ns: units,
+                                       footprint: mib(300 + (t - 1000)))
+                r.awake = t
+                r.watch.ingest(sweep: makeSweep(at: t, [proc]), awake: t)
+                t += 2
+            }
+            return r.findings
+        }
+        XCTAssertTrue(play(0.8).isEmpty)
+        let quiet = play(0.03)
+        XCTAssertEqual(quiet.count, 1)
+        XCTAssertEqual(quiet.first?.cpuFraction ?? -1, 0.03, accuracy: 0.005)
+    }
+
+    /// The slow tier is not gated: a 9 MiB a minute climb on a process that averages 80 % of a core all day is still found
+    /// once, by the slow tier, and the finding says how busy it was. Failing here means a leaking app that is used all day
+    /// could never be found.
+    func testTheSlowTierFindsALeakInAProcessThatIsBusyAllDay() {
+        let r = WatchRig()
+        r.machine.add(100, 3072, path: leakyPath)
+        r.run(for: 3 * 3600, step: 8) { t in
+            r.machine.setMiB(100, 3072 + 0.15 * (t - 1000))
+            r.machine.setCPU(100, nanos: UInt64(0.8 * (t - 1000) * 1e9))
+        }
+        XCTAssertEqual(r.findings.count, 1)
+        guard let f = r.findings.first else { return }
+        XCTAssertEqual(f.tier, .slow)
+        XCTAssertEqual(f.cpuFraction ?? -1, 0.8, accuracy: 0.01)
+        XCTAssertTrue(f.explanation.hasSuffix("It averaged about 80% of a core over that time."), f.explanation)
+    }
+
+    /// With the CPU going backwards on the machine (a reused pid reads as a different process by its start time, but a
+    /// counter reset must still be harmless): the watch keeps running and the quiet leak is still found.
+    func testACPUCounterResetOnTheMachineIsHarmless() {
+        let r = WatchRig()
+        r.machine.add(100, 300, path: leakyPath)
+        r.run(for: 200) { t in
+            r.machine.setMiB(100, 300 + (t - 1000))
+            let elapsed = t < 1030 ? t - 1000 : t - 1030
+            r.machine.setCPU(100, nanos: UInt64(0.03 * elapsed * 1e9))
+        }
+        XCTAssertEqual(r.findings.count, 1)
+        XCTAssertLessThan(r.findings.first?.cpuFraction ?? 1, 0.05)
+    }
+
     // MARK: The real readers
 
     /// The two narrow readers this feature adds to ProcessSampler see this very process: its start time and footprint, in
@@ -863,5 +959,33 @@ final class MemoryWatchTests: XCTestCase {
         let mine = all.first { $0.pid == me }
         XCTAssertNotNil(mine)
         XCTAssertEqual(mine?.start, one.start, "the start time is the identity a pid reuse is judged by")
+        // The CPU time rides along: a test process has used some, the counter never goes down, and a later pass sees at
+        // least what an earlier read did.
+        XCTAssertGreaterThan(one.cpuNanos, 1_000_000, "a process that has run a test has used more than a millisecond")
+        XCTAssertLessThan(one.cpuNanos, 1_000_000_000_000_000, "and not centuries")
+        XCTAssertGreaterThanOrEqual(mine?.cpuNanos ?? 0, one.cpuNanos)
+        XCTAssertGreaterThanOrEqual(ProcessSampler.footprint(of: me)?.cpuNanos ?? 0, mine?.cpuNanos ?? 0)
+    }
+
+    /// The CPU figure is in real nanoseconds, not the mach time units rusage reports (41.7 times smaller on Apple Silicon):
+    /// after burning about 100 ms of this process's own CPU, the reader and libc's `clock()` agree to within a factor of two.
+    func testTheCPUReadIsInRealNanosecondsAgainstTheProcessOwnClock() {
+        let me = getpid()
+        let began = Double(clock()) / 1_000_000
+        while Double(clock()) / 1_000_000 - began < 0.1 { _ = sqrt(Double(clock())) }
+        let before = Double(clock()) / 1_000_000
+        guard let read = ProcessSampler.footprint(of: me) else { return XCTFail("could not read this process") }
+        let after = Double(clock()) / 1_000_000
+        let seconds = Double(read.cpuNanos) / 1e9
+        XCTAssertGreaterThanOrEqual(seconds, before * 0.5, "a 41.7x error would put this far below")
+        XCTAssertLessThanOrEqual(seconds, after * 2 + 0.1)
+    }
+
+    func testMachTimeNanosecondsConvertsAndSaturates() {
+        XCTAssertEqual(MachTime.nanoseconds(units: 0), 0)
+        XCTAssertEqual(Double(MachTime.nanoseconds(units: 24_000_000)), 24_000_000 * MachTime.nanosPerUnit, accuracy: 1)
+        XCTAssertEqual(MachTime.nanoseconds(units: UInt64.max), UInt64.max, "saturates instead of trapping")
+        XCTAssertEqual(makeProcess(pid: 1, nJ: 0, cpu_ns: 1_000).cpuNanos, MachTime.nanoseconds(units: 1_000),
+                       "a sweep's process converts its mach time units the same way")
     }
 }

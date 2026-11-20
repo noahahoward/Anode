@@ -27,10 +27,15 @@ private struct Feeder {
     var rules = GrowthRules.standard
     var found: [(t: Double, verdict: GrowthVerdict)] = []
 
-    mutating func feed(_ bytes: UInt64, at t: Double, age: Double = 10_000) {
-        if let v = tracker.ingest(bytes: bytes, at: t, processAge: age, rules: rules) { found.append((t: t, verdict: v)) }
+    mutating func feed(_ bytes: UInt64, at t: Double, cpu: UInt64? = nil, age: Double = 10_000) {
+        if let v = tracker.ingest(bytes: bytes, at: t, cpuNanos: cpu, processAge: age, rules: rules) {
+            found.append((t: t, verdict: v))
+        }
     }
 }
+
+/// A process's total CPU time in nanoseconds at awake second `t`, when it used `fraction` of one core the whole time.
+private func cpuNanos(_ fraction: Double, at t: Double) -> UInt64 { UInt64((fraction * t * 1e9).rounded()) }
 
 private func mib(_ x: Double) -> UInt64 { MemoryTestKit.mib(x) }
 
@@ -329,10 +334,12 @@ final class MemoryGrowthTests: XCTestCase {
         XCTAssertEqual(f.found.count, 1)
     }
 
-    /// The tracker is a fixed-size value with nothing on the heap: about 172 bytes, and never over its 192-byte budget.
+    /// The tracker is a fixed-size value with nothing on the heap. The budget was 192 bytes; each of the four buckets
+    /// gained a CPU total and a count (32 to 40 bytes) and the tracker a last CPU reading, so it is about 218 bytes and
+    /// the budget is 224 (its 224-byte stride, a multiple of 16).
     func testTheTrackerIsAFixedSizeValueWithinItsBudget() {
-        XCTAssertLessThanOrEqual(MemoryLayout<GrowthTracker>.size, 192)
-        XCTAssertLessThanOrEqual(MemoryLayout<GrowthTracker>.stride, 192)
+        XCTAssertLessThanOrEqual(MemoryLayout<GrowthTracker>.size, 224)
+        XCTAssertLessThanOrEqual(MemoryLayout<GrowthTracker>.stride, 224)
     }
 
     /// Every starting value is in GrowthRules.standard and nowhere else. A change to one is a decision, so it changes
@@ -351,6 +358,7 @@ final class MemoryGrowthTests: XCTestCase {
         XCTAssertEqual(r.dipToleranceFractionOfGrowth, 0.25)
         XCTAssertEqual(r.minProcessAgeSeconds, 180)
         XCTAssertEqual(r.quietAfterGapSeconds, 120)
+        XCTAssertEqual(r.maxBusyFraction, 0.25, "a quarter of one core, averaged over the window")
         XCTAssertEqual(r.risingEpsilonMinBytes, 256 * 1024)
         XCTAssertEqual(r.risingEpsilonFraction, 0.001)
         XCTAssertEqual(r.maxCandidates, 32)
@@ -381,6 +389,7 @@ final class MemoryGrowthTests: XCTestCase {
         XCTAssertEqual(r.dipToleranceFractionOfGrowth, standard.dipToleranceFractionOfGrowth)
         XCTAssertEqual(r.slowFeedIntervalSeconds, 300)
         XCTAssertEqual(r.slowRingCapacity, 48)
+        XCTAssertEqual(r.maxBusyFraction, .infinity, "the slow tier never gates on CPU")
         XCTAssertEqual(r.maxCandidates, standard.maxCandidates, "the candidate table is shared and unchanged")
     }
 
@@ -438,14 +447,15 @@ final class MemoryGrowthTests: XCTestCase {
     // MARK: The words
 
     private func finding(net: UInt64, now: UInt64, window: Double, rising: Int = 21, total: Int = 24,
-                         bucket: Double = 15, dip: UInt64 = 6 << 20, tier: GrowthTier = .fast) -> Finding {
+                         bucket: Double = 15, dip: UInt64 = 6 << 20, tier: GrowthTier = .fast,
+                         cpu: Double? = nil) -> Finding {
         Finding(processKey: ProcessKey(pid: 1, startAbsTime: 1), pid: 1, name: "Safari",
                 path: "/Applications/Safari.app/Contents/MacOS/Safari", identityKey: "/Applications/Safari.app",
                 isApp: true, startBytes: now - net, nowBytes: now, netGrowthBytes: net,
                 windowSeconds: window, bucketSeconds: bucket,
                 flaggedAtWall: Date(timeIntervalSinceReferenceDate: 0), flaggedAtAwake: 0,
                 risingSamples: rising, totalSamples: total, largestDipBytes: dip, history: [], shouldNotify: true,
-                tier: tier)
+                tier: tier, cpuFraction: cpu)
     }
 
     /// A finding built the way every existing caller builds one (no tier) is a fast finding.
@@ -526,6 +536,172 @@ final class MemoryGrowthTests: XCTestCase {
         let f = finding(net: mib(300), now: mib(1500), window: 60)
         XCTAssertEqual(f.growthBytesPerSecond, Double(mib(5)), accuracy: 1)
         XCTAssertEqual(f.growthFraction, 0.25, accuracy: 0.0001)
+    }
+
+    // MARK: CPU
+
+    /// A fast-tier leak that otherwise fires (1 MiB a second on a 200 MiB process) does not fire while the process averages
+    /// 80 % of a core: the growth is work it was doing. Failing here means a busy build or test run is called a leak.
+    func testALeakWhileTheProcessIsBusyIsNeverFlagged() {
+        var f = Feeder()
+        for i in 0...300 { let t = Double(i) * 2; f.feed(mib(200 + t), at: t, cpu: cpuNanos(0.8, at: t)) }
+        XCTAssertTrue(f.found.isEmpty)
+        XCTAssertNotEqual(f.tracker.phase, .reported)
+    }
+
+    /// The same growth at 3 % of a core is flagged on the first full window, and the verdict says how busy the process was.
+    func testTheSameLeakWhileTheProcessIsNearlyIdleIsFlaggedWithItsCPU() {
+        var f = Feeder()
+        for i in 0...150 { let t = Double(i) * 2; f.feed(mib(200 + t), at: t, cpu: cpuNanos(0.03, at: t)) }
+        XCTAssertEqual(f.found.count, 1)
+        guard let hit = f.found.first else { return }
+        XCTAssertEqual(hit.t, 64)
+        XCTAssertEqual(hit.verdict.cpuFraction ?? -1, 0.03, accuracy: 0.002)
+    }
+
+    /// Either side of the line: 20 % of a core is under the quarter and flagged, 30 % is over it and is not.
+    func testTheBusyLineIsAQuarterOfACore() {
+        var under = Feeder(), over = Feeder()
+        for i in 0...150 {
+            let t = Double(i) * 2
+            under.feed(mib(200 + t), at: t, cpu: cpuNanos(0.20, at: t))
+            over.feed(mib(200 + t), at: t, cpu: cpuNanos(0.30, at: t))
+        }
+        XCTAssertEqual(under.found.count, 1)
+        XCTAssertTrue(over.found.isEmpty)
+    }
+
+    /// Several busy threads read above one core (300 %): gated all the same.
+    func testMoreThanOneCoreIsBusy() {
+        var f = Feeder()
+        for i in 0...300 { let t = Double(i) * 2; f.feed(mib(200 + t), at: t, cpu: cpuNanos(3.0, at: t)) }
+        XCTAssertTrue(f.found.isEmpty)
+    }
+
+    /// A busy stretch followed by an idle one: nothing while it is busy, and then the window slides until it holds
+    /// (almost) only idle time and the leak is flagged. 80 % of a core until t = 100, then 3 %: the window [96, 160] holds
+    /// four busy seconds, which averages about 8 %, and the one before it (20 busy seconds) is still over the quarter.
+    func testABusyWindowFollowedByAnIdleOneFiresOnTheIdleOne() {
+        var f = Feeder()
+        let busyUntil = 100.0
+        for i in 0...250 {
+            let t = Double(i) * 2
+            let cpu = UInt64((0.8 * min(t, busyUntil) * 1e9 + 0.03 * max(0, t - busyUntil) * 1e9).rounded())
+            f.feed(mib(200 + t), at: t, cpu: cpu)
+        }
+        XCTAssertEqual(f.found.count, 1)
+        guard let hit = f.found.first else { return }
+        XCTAssertGreaterThan(hit.t, busyUntil, "never while it was busy")
+        XCTAssertLessThanOrEqual(hit.t, busyUntil + 80, "and within a window and a hop of it going quiet")
+        XCTAssertLessThan(hit.verdict.cpuFraction ?? 1, 0.25)
+        XCTAssertGreaterThan(hit.verdict.cpuFraction ?? 0, 0.03, "the window still held a little of the busy stretch")
+    }
+
+    /// A window that is re-anchored by a dip takes none of the CPU used before it: a busy ramp that falls back (a finished
+    /// job), then a quiet leak, is judged on the quiet leak alone.
+    func testACPUSpentBeforeAReanchorDoesNotCountAgainstTheNewWindow() {
+        var f = Feeder()
+        let dipAt = 42.0
+        for i in 0...150 {
+            let t = Double(i) * 2
+            let bytes = t < dipAt ? mib(200 + t) : mib(150 + (t - dipAt))
+            let cpu = UInt64((0.8 * min(t, dipAt) * 1e9 + 0.03 * max(0, t - dipAt) * 1e9).rounded())
+            f.feed(bytes, at: t, cpu: cpu)
+        }
+        XCTAssertEqual(f.found.count, 1)
+        guard let hit = f.found.first else { return }
+        XCTAssertEqual(hit.verdict.startBytes, mib(150), "the window began at the dip")
+        XCTAssertEqual(hit.verdict.cpuFraction ?? -1, 0.03, accuracy: 0.002)
+    }
+
+    /// CPU unknown (nil) gates nothing: the verdict is the one it always was, and carries no fraction.
+    func testAnUnknownCPUFiresAsBefore() {
+        var f = Feeder()
+        for i in 0...150 { let t = Double(i) * 2; f.feed(mib(200 + t), at: t) }
+        XCTAssertEqual(f.found.count, 1)
+        XCTAssertEqual(f.found.first?.t, 64)
+        XCTAssertNil(f.found.first?.verdict.cpuFraction)
+        // A tracker that sees the CPU on only some samples cannot call the window busy, so it does not gate either.
+        var some = Feeder()
+        for i in 0...150 {
+            let t = Double(i) * 2
+            some.feed(mib(200 + t), at: t, cpu: i % 2 == 0 ? cpuNanos(0.8, at: t) : nil)
+        }
+        XCTAssertEqual(some.found.count, 1)
+        XCTAssertNil(some.found.first?.verdict.cpuFraction)
+    }
+
+    /// The slow tier's rules never gate: the same slow climb at 80 % of a core is found, and says it averaged that.
+    func testTheSlowRulesFindTheSameClimbAtEightyPercentOfACore() {
+        var f = Feeder()
+        f.rules = .slow
+        for i in 0...(3 * 3600 / 300) {
+            let t = Double(i) * 300
+            f.feed(mib(3072 + 0.15 * t), at: t, cpu: cpuNanos(0.8, at: t))
+        }
+        XCTAssertEqual(f.found.count, 1)
+        XCTAssertEqual(f.found.first?.t, 7200)
+        XCTAssertEqual(f.found.first?.verdict.cpuFraction ?? -1, 0.8, accuracy: 0.01)
+    }
+
+    /// A CPU counter that goes backwards (a reused pid, a counter reset) adds nothing for that sample and breaks nothing:
+    /// no trap, a quiet leak is still flagged with a fraction a hair under the true one, and a busy one is still gated.
+    func testACPUCounterThatGoesBackwardsContributesNothing() {
+        func cpuWithReset(_ fraction: Double, at t: Double) -> UInt64 {
+            t < 30 ? cpuNanos(fraction, at: t) : cpuNanos(fraction, at: t - 30)    // back to nearly zero at t = 30
+        }
+        var quiet = Feeder(), busy = Feeder()
+        for i in 0...150 {
+            let t = Double(i) * 2
+            quiet.feed(mib(200 + t), at: t, cpu: cpuWithReset(0.03, at: t))
+            busy.feed(mib(200 + t), at: t, cpu: cpuWithReset(0.8, at: t))
+        }
+        XCTAssertEqual(quiet.found.count, 1)
+        let fraction = quiet.found.first?.verdict.cpuFraction ?? -1
+        XCTAssertGreaterThan(fraction, 0.02)
+        XCTAssertLessThanOrEqual(fraction, 0.03)
+        XCTAssertTrue(busy.found.isEmpty, "losing one sample's CPU does not make a 80 % window look idle")
+        // The most extreme counters do not trap either.
+        var wild = Feeder()
+        for i in 0...150 {
+            let t = Double(i) * 2
+            wild.feed(mib(200 + t), at: t, cpu: i % 2 == 0 ? UInt64.max : 0)
+        }
+        XCTAssertLessThanOrEqual(wild.found.count, 1)
+    }
+
+    // MARK: The words, with CPU
+
+    /// A fast finding with a known fraction adds one sentence, with the percentage rounded, and keeps every other.
+    func testTheFastExplanationSaysHowBusyTheProcessWas() {
+        let plain = finding(net: mib(412), now: mib(1800), window: 75).explanation
+        let text = finding(net: mib(412), now: mib(1800), window: 75, cpu: 0.034).explanation
+        XCTAssertEqual(text, plain + " It used about 3% of a core while its memory grew, "
+                       + "so work it was doing does not explain the growth.")
+        XCTAssertTrue(finding(net: mib(412), now: mib(1800), window: 75, cpu: 0.2449).explanation.contains("about 24% of a core"))
+        XCTAssertTrue(finding(net: mib(412), now: mib(1800), window: 75, cpu: 0.0049).explanation.contains("It used under 1% of a core"))
+        XCTAssertTrue(finding(net: mib(412), now: mib(1800), window: 75, cpu: 0).explanation.contains("It used under 1% of a core"))
+    }
+
+    /// With the CPU unknown the explanation is exactly what it was, and so is the notification, known or not.
+    func testNoSentenceAboutCPUWhenItIsUnknownAndTheNotificationNeverChanges() {
+        let plain = finding(net: mib(412), now: mib(1800), window: 75)
+        XCTAssertNil(plain.cpuFraction)
+        XCTAssertFalse(plain.explanation.contains("core"), plain.explanation)
+        XCTAssertEqual(finding(net: mib(412), now: mib(1800), window: 75, cpu: 0.03).notificationBody, plain.notificationBody)
+        let slow = finding(net: 1 << 30, now: 4 << 30, window: 7200, bucket: 1800, tier: .slow)
+        XCTAssertFalse(slow.explanation.contains("core"), slow.explanation)
+        XCTAssertEqual(finding(net: 1 << 30, now: 4 << 30, window: 7200, bucket: 1800, tier: .slow, cpu: 0.8).notificationBody,
+                       slow.notificationBody)
+    }
+
+    /// A slow finding says what it averaged over the hours, after its existing sentences.
+    func testTheSlowExplanationSaysWhatTheProcessAveraged() {
+        let plain = finding(net: 1 << 30, now: 4 << 30, window: 7200, bucket: 1800, tier: .slow).explanation
+        let text = finding(net: 1 << 30, now: 4 << 30, window: 7200, bucket: 1800, tier: .slow, cpu: 0.8).explanation
+        XCTAssertEqual(text, plain + " It averaged about 80% of a core over that time.")
+        XCTAssertTrue(finding(net: 1 << 30, now: 4 << 30, window: 7200, bucket: 1800, tier: .slow, cpu: 0.001)
+            .explanation.hasSuffix("It averaged under 1% of a core over that time."))
     }
 
     // MARK: Identity keys

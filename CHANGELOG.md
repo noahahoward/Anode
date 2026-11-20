@@ -7,6 +7,10 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.27.2 — 2026-11-19
+- Memory Watch now looks at how busy an app was. The quick "possible memory leak" notice is no longer raised for an app that was working hard while its memory grew (an editor during a long test run, say): growth under load is expected. It is raised for growth in an app that is mostly idle, which is the usual sign of a real leak. The slow two-hour check ignores CPU, so a leak in an app you use all day is still found, only later. The leak window now says how much of a core the app used while its memory grew.
+- The Processes ledger shows a small red "⚠️ Possible Memory Leak" at the right end of an app's row while a leak notice for a running app is open. Pressing it opens the same window as the notification. Nothing is shown when nothing is flagged.
+
 ## 1.27.1 — 2026-11-19
 - The low-memory warning is less twitchy: it follows macOS's own memory pressure graph and nothing else. It warns when the graph has stayed orange for two minutes and sends a critical warning when it turns red. Heavy swap use and one big app no longer raise an alert by themselves, because a Mac that is running well can show both.
 - Anode uses much less energy while it sits in the menu bar. On one Mac with Memory Watch switched on, its processor use fell from about 0.5% of one core to about 0.2%, and it wakes the processor far less often.
