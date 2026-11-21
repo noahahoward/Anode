@@ -15,18 +15,22 @@ public enum SignificantEnergy {
     /// The most rows the menu shows.
     public static let maxApps = 6
 
-    /// One thing Anode has measured: an application when it has a bundle (`isApp`), else a daemon or a tool.
+    /// One thing Anode has measured: an application when it has a bundle (`isApp`), else a daemon or a tool. `isAnode` is Anode itself.
     public struct Candidate: Equatable {
         public var name: String
         public var isApp: Bool
+        public var isAnode: Bool
         public var stats: EnergyStats
-        public init(name: String, isApp: Bool, stats: EnergyStats) { self.name = name; self.isApp = isApp; self.stats = stats }
+        public init(name: String, isApp: Bool, isAnode: Bool = false, stats: EnergyStats) {
+            self.name = name; self.isApp = isApp; self.isAnode = isAnode; self.stats = stats
+        }
     }
 
-    /// The rows for the menu, the biggest drain first. `alreadyListed` are the names on the open menu now.
+    /// The rows for the menu, the biggest drain first. Anode is never listed: most of what it costs is the reading of other apps, and a
+    /// row for it beside the apps it reports on would blame it for their work (the Processes ledger still shows it). `alreadyListed` are the names on the open menu now.
     public static func apps(from candidates: [Candidate], alreadyListed: Set<String>) -> [BatteryMenuModel.EnergyApp] {
         candidates
-            .filter { $0.isApp }
+            .filter { $0.isApp && !$0.isAnode }
             .filter { c in
                 c.stats.pctPerHour >= minimumPercentPerHour
                     || (alreadyListed.contains(c.name) && c.stats.pctPerHour >= keepAtPercentPerHour)

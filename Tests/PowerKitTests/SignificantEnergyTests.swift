@@ -29,6 +29,13 @@ final class SignificantEnergyTests: XCTestCase {
         XCTAssertEqual(listed.map(\.name), ["Safari"])
     }
 
+    func testAnodeItselfIsNeverListed_HoweverMuchItUses() {
+        let anode = SignificantEnergy.Candidate(name: "Anode", isApp: true, isAnode: true,
+                                                stats: EnergyStats(pctPerHour: 3, cpuPercent: 5, memoryBytes: 0, minutesBack: nil))
+        let listed = SignificantEnergy.apps(from: [anode, app("Safari", 1)], alreadyListed: ["Anode"])
+        XCTAssertEqual(listed.map(\.name), ["Safari"])
+    }
+
     func testAnAppAlreadyListedStaysUntilItFallsWellBelowTheMinimum() {
         // Hovering at the minimum must not make rows come and go.
         let still = SignificantEnergy.apps(from: [app("A", 0.4)], alreadyListed: ["A"])

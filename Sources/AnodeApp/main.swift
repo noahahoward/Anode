@@ -2452,7 +2452,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     func energyCandidates() -> [SignificantEnergy.Candidate] {
         guard let s = lastSnapshot else { return [] }
         return s.apps.map { a in
-            SignificantEnergy.Candidate(name: a.name, isApp: a.isApp,
+            SignificantEnergy.Candidate(name: a.name, isApp: a.isApp, isAnode: a.identity.bundleID == "dev.anode.app",
                                         stats: EnergyStats(pctPerHour: a.percentPerHour, cpuPercent: a.cpuPercent, memoryBytes: a.memoryBytes,
                                                            minutesBack: RuntimeCost.minutes(appWatts: a.watts, snapshot: s)))
         }
