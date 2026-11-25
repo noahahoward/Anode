@@ -17,7 +17,7 @@ ICON="Resources/AppIcon.icon"
 # report can quote what About says and the answer maps to an exact commit —
 # which matters more than usual here, because there is no update mechanism and
 # an installed build may be weeks old.
-VERSION="1.27.2"
+VERSION="1.28.0"
 BUILD="$(git rev-list --count HEAD 2>/dev/null || echo 1)"
 COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 # Absolute, and resolved through any symlink, because it is written into a
@@ -124,6 +124,12 @@ fi
 # build that actually gets run.
 for doc in README.md TESTING.md; do
   [ -f "$doc" ] && cp "$doc" "$APP/Contents/Resources/$doc"
+done
+
+# The Hardware View's stand-in teardown photo. The view looks in Contents/Resources first and falls back to the checkout
+# (Resources/HardwareView) for a `swift build` binary; an installed bundle has no checkout above it, so it needs this copy.
+for photo in macbook-pro-teardown.jpg; do
+  [ -f "Resources/HardwareView/$photo" ] && cp "Resources/HardwareView/$photo" "$APP/Contents/Resources/$photo"
 done
 
 # The updater ships INSIDE the bundle, and that is not tidiness.

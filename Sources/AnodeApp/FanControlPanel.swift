@@ -382,6 +382,20 @@ final class FanControlPanel: NSView {
         perform(session.apply(g))
     }
 
+    /// The Hardware View's fan slider, as the same gesture this strip's own slider sends: a speed (`rpm`) is `setSpeed` with that
+    /// fan's limits, and nil (the fan's chip pressed) is `release`, which hands every fan back as the strip's does. It goes
+    /// through `gesture`, so nothing installs the helper for it (without the daemon it only re-renders), and the first speed
+    /// asks the same consent question when fan control is still off. `current` is the newest sensor reading: this strip is
+    /// told the fans only while the Fans tab is on screen, so it cannot be relied on for the limits.
+    func hardwareViewFan(index: Int, rpm: Double?, fans current: [FanInfo]) {
+        // This strip's own copies of these answers are refreshed on its tab's ticks only.
+        session.enabled = settings.fanControlEnabled
+        installed = FanDaemon.isInstalled()
+        guard let rpm else { return gesture(.release) }
+        guard let fan = current.first(where: { $0.index == index }) else { return }
+        gesture(.setSpeed(index: index, rpm: rpm, limits: FanPolicy.Limits(minRPM: fan.minRPM, maxRPM: fan.maxRPM)))
+    }
+
     /// The speed a gesture is asking for, if it is asking for one.
     private func wanted(from g: FanSession.Gesture) -> (index: Int, rpm: Double)? {
         switch g {

@@ -158,6 +158,8 @@ final class BottomContextTests: XCTestCase {
             BottomContext.forLens(lens, sortKey: key, resource: resource)
         }
         XCTAssertEqual(subject(.fans), .fans)
+        // Hardware has no subject of its own, and the sort must not decide it either.
+        XCTAssertEqual(subject(.hardware, "cpu"), .battery)
         XCTAssertEqual(subject(.network), .network)
         XCTAssertEqual(subject(.sensors, "memPct"), .sensors)
         // Processes has no subject of its own, so the sort keeps deciding.

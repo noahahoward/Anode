@@ -74,6 +74,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// Memory Watch (possible memory leaks). Exists for the app's whole life; while its box is unticked it holds nothing but an
     /// observer.
     var memoryWatch: MemoryWatchController?
+    /// Hardware tab's controller. Exists for the app's whole life but holds nothing until the tab is first shown
+    /// (`paneAppeared()`); `select(_:)` tells it when the tab appears and goes, and `refreshPane()` feeds it.
+    var hardwareView: HardwareViewController?
+    /// The Hardware tab's pane: made lazily by the controller on the first `paneAppeared()` (through `makeHost` below).
+    var hardwarePane: HardwarePane?
     /// Memory Watch's detector, nil while the box is unticked. Owned by the SAMPLING queue: made, replaced and read only there.
     var leakWatch: MemoryWatching?
     var soundMenu: SoundMenuController?
@@ -464,6 +469,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         memoryWatch = MemoryWatchRuntime.live(sampling: sampling, attach: { [weak self] in self?.leakWatch = $0 },
                                               openProcesses: { [weak self] finding in self?.showLedger(onApp: finding.name) },
                                               bringForward: { [weak self] in self?.main.show() })
+        // Hardware tab: nothing of it exists until the tab is first shown. The pane is made then, by the controller, through
+        // `makeHost` (called once), and kept here so `select(_:)` can put it in the main window each time the tab is entered.
+        hardwareView = HardwareViewRuntime.live(configs: { [weak self] in self?.widgets?.configs ?? [] },
+                                                store: { [weak self] in self?.store },
+                                                fanPanel: fansPane.control,
+                                                currentFans: { [weak self] in self?.lastSystem?.fans ?? [] },
+                                                makeHost: { [weak self] in
+                                                    let pane = HardwarePane(frame: .zero)
+                                                    self?.hardwarePane = pane
+                                                    return pane
+                                                })
         // Anode's own Sound menu: nothing of it exists until its setting is on (Beta Features).
         // One driver for both menus: macOS's Control Center is used by one job at a time.
         let panelDriver = SystemPanelDriver()
@@ -2629,6 +2645,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // missing temperature as "—", so it needs no such flag.
         case .sensors: sensorsPane.update(cpu: sys.cpuTemperature, gpu: sys.gpuTemperature)
         case .fans:    fansPane.update(sys.fans, sampled: sys.sensorsSampled)
+        // The ONLY place the Hardware tab is fed: main thread, from `apply` on a visible tick. A flag check inside the
+        // controller when the tab is not showing.
+        case .hardware: hardwareView?.feed(system: sys, power: lastSnapshot)
         default: break
         }
     }
@@ -2774,7 +2793,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// open — see `visibleNeeds`.
     func select(_ lens: SidebarView.Lens) {
         let before = bottomContext
+        let previous = self.lens
         self.lens = lens
+        // Leaving the Hardware tab ends everything kept for it, whichever way the lens was changed (the rail, the View menu,
+        // a menu bar widget click and `showLedger` all come through here). The pane itself is taken out of the window by the
+        // `showPane` below, which is what stops it drawing.
+        if previous == .hardware, lens != .hardware { hardwareView?.paneDisappeared() }
         // The bottom follows the TAB now, so a tab change moves it exactly as a
         // sort change does — and for the same reason: two seconds of a graph
         // describing the tab you just left is the defect the Resources rail
@@ -2789,6 +2813,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
             case .network:   main.showPane(networkPane)
             case .sensors:   main.showPane(sensorsPane)
             case .fans:      main.showPane(fansPane)
+            case .hardware:
+                // The controller makes the pane on its first appearance (through `makeHost`), so it is told first and the pane is
+                // fetched after. Shown on EVERY entry, not just the first: leaving replaced it in the container.
+                hardwareView?.paneAppeared()
+                if let pane = hardwarePane { main.showPane(pane) }
             case .processes: main.showPane(nil)
             }
             refreshPane()
@@ -2927,6 +2956,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         gameMode?.shutdown()
         menuBarHider?.shutdown()
         memoryWatch?.shutdown()
+        hardwareView?.shutdown()
         liveWallpaper?.shutdown()
         // Read on the sampling queue, which owns both — reading them here on
         // main raced the tick that mutates them. Safe to wait on: the sampling

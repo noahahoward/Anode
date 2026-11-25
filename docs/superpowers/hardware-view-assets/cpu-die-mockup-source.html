@@ -1,0 +1,533 @@
+<meta charset="utf-8">
+<title>Anode CPU Die</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout concept: the processor itself. A stylized silicon floorplan; every core is a tile that glows with its own load.
+   Super, Performance and Efficiency cores each get one hue; intensity is load. Dark-first, single palette by choice. */
+:root{
+  --bg:#06070a; --win:#0b0d11; --ink:#e8ecf2; --dim:#8a94a4; --faint:#566070;
+  --line:rgba(255,255,255,.08); --edge:rgba(255,255,255,.10);
+  --accent:#00e5a0; --cyan:#4fc8e6; --warm:#ff9a3d;
+  --super:#a99bff; --perf:#4da3ff; --eff:#00e5a0;
+  --sans:'Inter',-apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{background:var(--bg);color:var(--ink);font-family:var(--sans);margin:0}
+body{padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-area-inset-right,0px));padding-block:20px 56px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.mock{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:10px 14px;border:1px dashed rgba(255,255,255,.16);border-radius:10px;font-size:12px;color:var(--dim)}
+.mock b{font-family:var(--mono);font-weight:500;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+.seg{display:flex;flex-wrap:wrap;gap:4px}
+.seg button,.tog{font:500 12px var(--sans);color:var(--dim);background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:7px;padding:5px 10px;cursor:pointer}
+.seg button:hover,.tog:hover{color:var(--ink);background:rgba(255,255,255,.08)}
+.seg button[aria-pressed=true],.tog[aria-pressed=true]{color:#041a12;background:var(--accent);border-color:var(--accent);font-weight:600}
+button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.win{width:100%;margin:0 auto;border-radius:14px;background:var(--win);border:1px solid var(--edge);box-shadow:0 30px 80px rgba(0,0,0,.55);overflow:hidden;transition:max-width .25s}
+.win.narrow-preview{max-width:420px}
+.title{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);background:linear-gradient(#12151b,#0d1015)}
+.dots{display:flex;gap:7px}.dots i{width:11px;height:11px;border-radius:50%;display:block}
+.dots i:nth-child(1){background:#ff5f57}.dots i:nth-child(2){background:#febc2e}.dots i:nth-child(3){background:#28c840}
+.title h1{font:600 13px var(--sans);margin:0;flex:1;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.live{font:500 10.5px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.live i{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);display:block}
+.sample{display:none;font:500 10.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:#2b1d00;background:var(--warm);padding:3px 8px;border-radius:6px;white-space:nowrap}
+.win.is-sample .sample{display:block}
+.stage{position:relative;background:radial-gradient(900px 520px at 50% 35%,#101620 0%,#090b0f 72%)}
+svg#die{display:block;width:100%;height:auto;margin:0 auto}
+svg text{font-family:var(--sans);fill:var(--ink)}
+.lbl{font:500 10.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;fill:var(--dim)}
+.dim{fill:var(--dim)}.faint{fill:var(--faint)}
+.num{font-variant-numeric:tabular-nums;font-weight:600}
+.core{cursor:pointer;outline:none}
+.core .cr,.gt,.gb{transition:fill-opacity .7s ease}
+.core .gh{transition:stroke-opacity .7s ease}
+.core .cid,.core .cu{transition:fill .5s ease}
+.core:hover .rim,.core:focus-visible .rim,.core.pinned .rim{stroke:#fff;stroke-opacity:.9}
+.core .rim{fill:none;stroke:transparent;stroke-width:1.6;transition:stroke .15s}
+.mark{cursor:pointer}
+.tip,.pin{position:absolute;z-index:5;border-radius:12px;background:rgba(14,17,22,.98);border:1px solid var(--edge);box-shadow:0 18px 50px rgba(0,0,0,.6);font-size:12.5px}
+.tip{pointer-events:none;width:min(290px,calc(100% - 20px));padding:11px 13px;display:none}
+.pin{width:min(330px,calc(100% - 20px));padding:14px 16px;display:none;gap:4px 22px;grid-template-columns:1fr 1fr}
+.pin.one{grid-template-columns:1fr}
+.pin .pc2{display:flex;flex-direction:column;justify-content:flex-end}
+.tip h3,.pin h3{margin:0 0 2px;font:600 13.5px var(--sans)}
+.sub{font:500 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:8px}
+.rows{display:grid;grid-template-columns:1fr auto;gap:5px 14px;align-items:baseline}
+.rows>span:nth-child(odd){color:var(--dim)}
+.rows>span:nth-child(even){text-align:right;font-variant-numeric:tabular-nums;font-weight:500}
+.tag{display:inline-block;font:500 9px var(--mono);letter-spacing:.08em;padding:1px 5px;border-radius:4px;margin-left:6px;vertical-align:1px}
+.tag.real{color:#06281c;background:var(--accent)}.tag.est{color:#2b1d00;background:var(--warm)}.tag.ex{color:#101826;background:#9fb0c8}
+.note{margin-top:9px;color:var(--dim);line-height:1.45;font-size:12px}
+.res{display:flex;height:8px;border-radius:4px;overflow:hidden;margin-top:8px;background:rgba(255,255,255,.06)}
+.res i{display:block;height:100%}
+.pin .x{position:absolute;top:8px;right:8px;width:24px;height:24px;border-radius:6px;border:0;background:rgba(255,255,255,.06);color:var(--dim);cursor:pointer;font-size:14px}
+.pin svg{display:block;width:100%;height:52px;margin-top:2px}
+.cap{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-top:4px}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:14px}
+.notes section{padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.02)}
+.notes h2{margin:0 0 8px;font:600 13px var(--sans)}
+.notes ul{margin:0;padding-left:16px;color:var(--dim);font-size:12.5px;line-height:1.55;display:flex;flex-direction:column;gap:5px}
+.notes b{color:var(--ink);font-weight:600}
+h2.sec{font:600 11px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:6px 0 -6px}
+.key{display:flex;flex-wrap:wrap;gap:10px 18px;font-size:12px;color:var(--dim);align-items:center}
+.sw{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-1px;margin-right:6px}
+@media (prefers-reduced-motion:reduce){.core .cr,.core .cid,.core .cu,.gt,.gb{transition:none}}
+.app{cursor:default}
+</style>
+
+<div class="wrap">
+  <div class="mock" role="group" aria-label="Mockup controls">
+    <b>Mockup controls · not part of the app</b>
+    <div class="seg" id="chipSeg" aria-label="Chip"></div>
+    <div class="seg" id="scenSeg" aria-label="Load"></div>
+    <div class="seg" aria-label="Options">
+      <button class="tog" id="liveTog" aria-pressed="false">Animate load</button>
+      <button class="tog" id="narrowTog" aria-pressed="false">Narrow window</button>
+    </div>
+  </div>
+
+  <div class="win" id="win">
+    <div class="title">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <h1 id="winTitle">CPU</h1>
+      <span class="sample">Sample values</span>
+      <span class="live"><i></i><span>Live · 2 s</span></span>
+    </div>
+    <div class="stage" id="stage">
+      <svg id="die" viewBox="0 0 1100 700" role="img" aria-label="Floorplan of the processor with every CPU core drawn as a tile whose glow shows its load"><defs id="ddefs"></defs><g id="scene"></g></svg>
+      <div class="tip" id="tip" role="tooltip"></div>
+      <div class="pin" id="pin" role="dialog" aria-label="Core detail"></div>
+    </div>
+  </div>
+
+  <h2 class="sec">Reading the die</h2>
+  <div class="key" aria-label="Key">
+    <span><i class="sw" style="background:var(--super)"></i>Super core</span>
+    <span><i class="sw" style="background:var(--perf)"></i>Performance core</span>
+    <span><i class="sw" style="background:var(--eff)"></i>Efficiency core</span>
+    <span>Brighter tile = busier core. Hatched = powered down.</span>
+    <span><span class="tag real">REAL</span> measured</span>
+    <span><span class="tag est">EST</span> estimate</span>
+    <span><span class="tag ex">SAMPLE</span> illustrative</span>
+  </div>
+  <div class="notes" id="notes"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+const fmt = (n,d=1) => Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+
+/* ---------- architecture data: kept apart from drawing, one entry per chip ---------- */
+const TIER = {S:{name:'Super',color:'#a99bff'},P:{name:'Performance',color:'#4da3ff'},E:{name:'Efficiency',color:'#00e5a0'}};
+const CHIPS = {
+  m5pro:{label:'M5 Pro · this Mac',name:'Apple M5 Pro',gpu:16,gpuLayout:{clusters:2,physical:10,disabled:[[0,5],[2,5]]},npu:'16-core Neural Engine',twoDie:true,real:true,
+    conf:'Core counts and the three 5-core clusters were read from this Mac. The floorplan arrangement is stylized.',
+    clusters:[{tier:'S',n:5,l2:16,cpus:[10,11,12,13,14]},{tier:'P',n:5,l2:8,cpus:[0,1,2,3,4]},{tier:'P',n:5,l2:8,cpus:[5,6,7,8,9]}]},
+  m4pro:{label:'M4 Pro',name:'Apple M4 Pro',gpu:20,npu:'16-core Neural Engine',
+    conf:'10 Performance + 4 Efficiency in two 5-core and one 4-core cluster (Eclectic Light, Wikipedia). Arrangement stylized.',
+    clusters:[{tier:'P',n:5,l2:16},{tier:'P',n:5,l2:16},{tier:'E',n:4,l2:4}]},
+  m1:{label:'M1',name:'Apple M1',gpu:8,npu:'16-core Neural Engine',
+    conf:'4 Performance + 4 Efficiency, one cluster each. The best documented die; arrangement still stylized.',
+    clusters:[{tier:'P',n:4,l2:12},{tier:'E',n:4,l2:4}]},
+  m3max:{label:'M3 Max',name:'Apple M3 Max',gpu:40,npu:'16-core Neural Engine',
+    conf:'12 Performance as two 6-core clusters + 4 Efficiency (Eclectic Light). Arrangement stylized.',
+    clusters:[{tier:'P',n:6,l2:16},{tier:'P',n:6,l2:16},{tier:'E',n:4,l2:4}]},
+  m5:{label:'M5',name:'Apple M5',gpu:10,npu:'16-core Neural Engine',
+    conf:'4 Super + 6 Efficiency (Apple newsroom). The one-cluster-each split is inferred.',
+    clusters:[{tier:'S',n:4,l2:16},{tier:'E',n:6,l2:4}]},
+  a18pro:{label:'A18 Pro · Neo',name:'Apple A18 Pro',gpu:5,npu:'16-core Neural Engine',
+    conf:'2 Performance + 4 Efficiency (Apple spec). Cluster grouping presumed.',
+    clusters:[{tier:'P',n:2,l2:8},{tier:'E',n:4,l2:4}]}
+};
+/* assign display names and logical CPU numbers */
+Object.values(CHIPS).forEach(ch=>{
+  let next = 0; const counter = {S:0,P:0,E:0}; ch.cores = [];
+  ch.clusters.forEach((cl,ci)=>{
+    cl.index = ci; cl.cores = [];
+    for (let k=0;k<cl.n;k++){
+      const core = {tier:cl.tier, cluster:ci, name:TIER[cl.tier].name[0]==='S'?'S'+counter.S++:cl.tier==='P'?'P'+counter.P++:'E'+counter.E++, cpu:cl.cpus?cl.cpus[k]:next++};
+      core.i = ch.cores.length; ch.cores.push(core); cl.cores.push(core);
+    }
+  });
+});
+
+/* ---------- load scenarios ----------
+   "now" on the lead chip uses the per-core busy % read from this Mac (host_processor_info, 2 s window). Everything else is illustrative. */
+const REAL_NOW = {S:[33,30,30,29,29], P0:[49,43,38,34,29], P1:[14,6,4,1,1]};
+const rnd = (i,s) => { const x = Math.sin(i*12.9898+s*78.233)*43758.5453; return x-Math.floor(x); };
+function baseUtil(ch,scen){
+  const out = [];
+  ch.cores.forEach(c=>{
+    let u;
+    if (scen==='now' && ch.real){ const cl = ch.clusters[c.cluster]; const arr = c.tier==='S'?REAL_NOW.S:(c.cluster===1?REAL_NOW.P0:REAL_NOW.P1); u = arr[cl.cores.indexOf(c)]; }
+    else if (scen==='now') u = c.tier==='E' ? 6+rnd(c.i,1)*18 : 3+rnd(c.i,2)*26;
+    else if (scen==='burst') u = (c.i===firstOfTop(ch)) ? 100 : (c.tier==='E'? 4+rnd(c.i,3)*10 : 1+rnd(c.i,4)*8);
+    else if (scen==='all') u = 88+rnd(c.i,5)*12;
+    else u = c.tier==='S'? 62+rnd(c.i,6)*20 : c.tier==='P'? 24+rnd(c.i,7)*40 : 14+rnd(c.i,8)*34;
+    out.push(Math.round(u));
+  });
+  return out;
+}
+const firstOfTop = ch => ch.cores.findIndex(c=>c.tier===(ch.cores.some(x=>x.tier==='S')?'S':'P'));
+const DIE_STATS = {now:{t:41.4,w:1.4},burst:{t:56,w:7.2},all:{t:81,w:26},mixed:{t:63,w:12}};
+
+/* ---------- GPU data ----------
+   "now" on the lead chip: device utilisation, performance state, temperature and the per-app GPU time were read from this Mac
+   (GPU under heavy load at the time). Power and memory are not measured here, so they are always marked SAMPLE. */
+const GPU_SCEN = {
+  now:{util:100,state:13,mhz:1620,temp:80,peak:83,pwr:31,mem:4.2,apps:[['wine',81],['WindowServer',7],['Brave Browser H…',5],['Google Chrome H…',4]]},
+  burst:{util:14,state:4,mhz:796,temp:46,peak:49,pwr:3,mem:1.1,apps:[['WindowServer',9],['Safari',4],['Terminal',1]]},
+  mixed:{util:46,state:9,mhz:1278,temp:61,peak:66,pwr:14,mem:2.8,apps:[['Final Cut Pro',31],['WindowServer',10],['Safari',5]]},
+  all:{util:97,state:13,mhz:1620,temp:78,peak:84,pwr:36,mem:6.3,apps:[['Blender',90],['WindowServer',6],['Safari',3]]}
+};
+const gpuBase = () => JSON.parse(JSON.stringify(GPU_SCEN[S.scen]));
+
+/* ---------- state ---------- */
+const S = {chip:'m5pro', scen:'now', live:false, forceNarrow:false, narrow:false, pin:null, util:[], hist:[], tick:0};
+let REFS = null;
+
+function resetValues(){
+  const ch = CHIPS[S.chip];
+  S.util = baseUtil(ch,S.scen).slice();
+  S.hist = S.util.map((u,i)=>Array.from({length:40},(_,k)=>clamp(Math.round(u+(rnd(i*7+k,9)-.5)*14),0,100)));
+  S.gpu = gpuBase(); S.gh = Array.from({length:40},(_,k)=>clamp(Math.round(S.gpu.util+(rnd(k,21)-.5)*(S.gpu.util>=99?4:12)),0,100));
+}
+function jitter(){
+  const ch = CHIPS[S.chip], base = baseUtil(ch,S.scen); S.tick++;
+  S.util = base.map((b,i)=>clamp(Math.round(b+(rnd(i+S.tick*3,11)-.5)*(S.scen==='burst'&&b===100?0:16)),0,100));
+  S.util.forEach((u,i)=>{ S.hist[i].push(u); if (S.hist[i].length>40) S.hist[i].shift(); });
+  const gb = gpuBase(); S.gpu.util = clamp(Math.round(gb.util+(rnd(S.tick,31)-.5)*(gb.util>=99?4:10)),0,100);
+  S.gpu.apps = gb.apps.map((a,i)=>[a[0],clamp(Math.round(a[1]*(1+(rnd(S.tick*5+i,32)-.5)*.2)),0,100)]);
+  S.gh.push(S.gpu.util); if (S.gh.length>40) S.gh.shift();
+}
+const isReal = () => CHIPS[S.chip].real && S.scen==='now';
+
+/* ---------- floorplan layout (pure geometry from the data above) ---------- */
+function layout(ch, narrow){
+  const W = narrow ? 500 : 1100, DW = narrow ? 456 : 740, X0 = narrow ? (W-DW)/2 : 30, Y0 = 20, pad = 14, g = 6;
+  const shapes = [], cores = [], clusters = [], marks = [];
+  const IW = DW-2*pad, ix = X0+pad, cl = ch.clusters, maxN = Math.max(...cl.map(c=>c.n));
+  const frame = {t:'frame',x:X0,y:Y0,w:DW,h:0}; shapes.push(frame);
+  // one cluster = a header, one row of cores and its L2 strip
+  const cluster = (c, x, y, w, cw, chh) => {
+    const C = {cl:c, x, y, w, h:40+chh+12+24+10, cols:c.n}; clusters.push(C);
+    const inner = c.n*cw+(c.n-1)*8, ox = x+(w-inner)/2;
+    c.cores.forEach((core,k)=> cores.push({core, x:ox+k*(cw+8), y:y+40, w:cw, h:chh}));
+    return C.h;
+  };
+  const strip = (y, bh, memW) => {
+    shapes.push({t:'ctx',x:ix,y,w:memW,h:bh,label:'MEM CTRL'});
+    shapes.push({t:'ctx',x:ix+IW-memW,y,w:memW,h:bh,label:'MEM CTRL'});
+    shapes.push({t:'ctx',x:ix+memW+g,y,w:IW-2*memW-2*g,h:bh,label:'SYSTEM CACHE'});
+  };
+  if (!narrow){
+    const LW = Math.round(IW*.40), RW = IW-LW-g, rx = ix+LW+g, top = Y0+pad;
+    const cw = Math.min(100, Math.floor((RW-24-8*(maxN-1))/maxN)), chh = 70;
+    let ry = top; cl.forEach(c=>{ ry += cluster(c, rx, ry, RW, cw, chh) + g; });
+    const clBottom = ry - g, titleH = 118, gpuMin = 376;
+    const colH = Math.max(clBottom-top+g+74, titleH+g+gpuMin);
+    const npuY = clBottom+g, npuH = top+colH-npuY, nw = Math.round(RW*.58);
+    shapes.push({t:'ctx',x:rx,y:npuY,w:nw,h:npuH,label:'NEURAL ENGINE',sub:ch.npu});
+    shapes.push({t:'ctx',x:rx+nw+g,y:npuY,w:RW-nw-g,h:npuH,label:'MEDIA'});
+    marks.push({x:ix,y:top,w:LW,h:titleH});
+    shapes.push({t:'gpu',x:ix,y:top+titleH+g,w:LW,h:colH-titleH-g,n:ch.gpu,lay:ch.gpuLayout||null});
+    const by = top+colH+g; strip(by,64,92);
+    if (ch.twoDie) shapes.push({t:'seam',x:ix+LW+g/2,y1:top,y2:top+colH});
+    frame.h = by+64+pad-Y0;
+  } else {
+    let y = Y0+pad;
+    marks.push({x:ix,y,w:IW,h:92}); y += 92+g;
+    cl.forEach(c=>{ const cw = Math.min(84, Math.floor((IW-24-8*(c.n-1))/c.n)); y += cluster(c, ix, y, IW, cw, 64) + g; });
+    shapes.push({t:'gpu',x:ix,y,w:IW,h:376,n:ch.gpu,lay:ch.gpuLayout||null}); y += 376+g;
+    shapes.push({t:'ctx',x:ix,y,w:Math.round(IW*.48),h:46,label:'NEURAL ENGINE'}); shapes.push({t:'ctx',x:ix+Math.round(IW*.52),y,w:Math.round(IW*.48),h:46,label:'MEDIA'}); y += 46+g;
+    strip(y,50,70); y += 50;
+    frame.h = y+pad-Y0;
+  }
+  return {W, H:Y0+frame.h+46, shapes, cores, clusters, marks, X0:ix, CW:IW};
+}
+
+/* ---------- build (structure) and update (values only) ---------- */
+const BLK = {
+  'GPU':{t:'Graphics processor',d:'Draws everything on screen and runs large parallel jobs. Each small tile here is one GPU core.'},
+  'NEURAL ENGINE':{t:'Neural Engine',d:'Runs machine-learning work such as image, speech and language models far more efficiently than the CPU.'},
+  'SYSTEM CACHE':{t:'System cache',d:'Fast memory shared by the whole chip, so the cores, GPU and Neural Engine can reuse data without going out to RAM.'},
+  'MEM CTRL':{t:'Memory controller',d:'Moves data between the chip and the unified memory that sits beside it in the same package.'},
+  'MEDIA':{t:'Media and display engines',d:'Fixed-function hardware that encodes and decodes video and drives the displays, so those jobs barely touch the cores.'}
+};
+function blkKey(label){ return label.startsWith('GPU')?'GPU':label; }
+/* original line-art motifs: thin lines, no fills, one per block type */
+function motif(key,x,y,w,h){
+  const st = 'fill="none" stroke="url(#lw)" stroke-width=".9"', o = [];
+  if (key==='SYSTEM CACHE'){ const cw = 24, chh = 15, cols = Math.max(2,Math.floor(w/cw)), rows = Math.max(1,Math.floor(h/chh));
+    for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) o.push(`<rect x="${(x+c*w/cols+2).toFixed(1)}" y="${(y+r*h/rows+2).toFixed(1)}" width="${(w/cols-4).toFixed(1)}" height="${(h/rows-4).toFixed(1)}" rx="1.5" ${st} opacity=".5"/>`); }
+  else if (key==='MEM CTRL'){ for (let k=0;k<Math.floor(w/9);k++) o.push(`<line x1="${x+k*9}" x2="${x+k*9}" y1="${y}" y2="${y+h*(k%3===0?1:.6)}" stroke="url(#lw)" stroke-width=".9" opacity=".5"/>`); }
+  else if (key==='NEURAL ENGINE'){ const n = Math.max(4,Math.floor(w/34)), tw = w/n;
+    for (let c=0;c<n;c++) for (let r=0;r<2;r++){ const rx=x+c*tw+3, ry=y+r*(h/2)+2, rw=tw-6, rh=h/2-4; o.push(`<rect x="${rx.toFixed(1)}" y="${ry.toFixed(1)}" width="${rw.toFixed(1)}" height="${rh.toFixed(1)}" rx="2" ${st} opacity=".55"/><rect x="${(rx+rw*.28).toFixed(1)}" y="${(ry+rh*.28).toFixed(1)}" width="${(rw*.44).toFixed(1)}" height="${(rh*.44).toFixed(1)}" ${st} opacity=".5"/>`); } }
+  else if (key==='MEDIA'){ for (let k=0;k<3;k++) o.push(`<rect x="${x+k*7}" y="${y+k*6}" width="${w-k*14}" height="${h-k*12}" rx="2" ${st} opacity="${.55-k*.12}"/>`); }
+  return o.join('');
+}
+function build(){
+  const ch = CHIPS[S.chip], L = layout(ch, S.narrow);
+  const LW = 'url(#lw)';
+  let o = `<defs>
+    <linearGradient id="lw" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="${L.W}" y2="${L.H}"><stop offset="0" stop-color="#7ae8da"/><stop offset=".5" stop-color="#2ea9c6"/><stop offset="1" stop-color="#0d6396"/></linearGradient>
+    <pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="7" stroke="rgba(255,255,255,.22)" stroke-width="2"/></pattern></defs>`;
+  L.shapes.forEach(s=>{
+    if (s.t==='frame'){
+      o += `<rect id="die-frame" x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}" rx="5" fill="#03070a" stroke="${LW}" stroke-width="2.4"/><rect x="${s.x+7}" y="${s.y+7}" width="${s.w-14}" height="${s.h-14}" rx="2" fill="none" stroke="${LW}" stroke-width=".7" opacity=".5"/>`;
+    } else if (s.t==='seam'){
+      o += `<line x1="${s.x}" x2="${s.x}" y1="${s.y1}" y2="${s.y2}" stroke="${LW}" stroke-width="1.4" stroke-dasharray="7 6" opacity=".8"/>`;
+    } else if (s.t==='ctx'){
+      const key = blkKey(s.label), mh = s.h-38;
+      o += `<g class="blk" data-blk="${key}"><rect x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}" rx="3" fill="rgba(46,169,198,.035)" stroke="${LW}" stroke-width="1.3"/>
+        <text class="lbl" x="${s.x+12}" y="${s.y+20}" style="font-size:9.5px;fill:#5fb9c4">${s.label}</text>${s.sub?`<text x="${s.x+12}" y="${s.y+36}" font-size="10.5" style="fill:#3f7f8c">${esc(s.sub)}</text>`:''}
+        ${mh>=16 && !s.sub ? motif(key,s.x+12,s.y+30,s.w-24,mh) : (s.sub && s.h>=80 ? motif(key,s.x+12,s.y+46,s.w-24,s.h-58) : '')}</g>`;
+    } else if (s.t==='gpu'){
+      const wideBlk = false, tilesW = wideBlk ? Math.round(s.w*.5) : s.w-24, lx = wideBlk ? s.x+tilesW+36 : s.x+12, lw = wideBlk ? s.w-tilesW-48 : s.w-24;
+      const lay = s.lay, rows = lay ? lay.clusters : (s.n>24?4:s.n>10?2:1), cols = lay ? lay.physical : Math.ceil(s.n/rows);
+      const tw = (tilesW-(cols-1)*4)/cols, th = Math.min(32,(wideBlk?64:56)/rows+8), ty0 = s.y+(wideBlk?56:56);
+      o += `<g class="blk" data-blk="GPU"><rect id="gpu-box" x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}" rx="3" fill="rgba(79,200,230,.035)" stroke="${LW}" stroke-width="1.3"/>
+        <text class="lbl" x="${s.x+12}" y="${s.y+22}" style="font-size:9.5px;fill:#5fb9c4">GPU · ${s.n} CORES</text>
+        <text id="gu-num" x="${s.x+12+tilesW}" y="${s.y+26}" text-anchor="end" font-size="26" font-weight="600" class="num"><tspan>0</tspan><tspan font-size="13" dx="1" font-weight="500">%</tspan></text>`;
+      let id = 0;
+      for (let r=0;r<rows;r++) for (let c=0;c<cols;c++){
+        const tx = s.x+12+c*(tw+4), ty = ty0+r*(th+4), off = lay ? lay.disabled[r].includes(c) : (r*cols+c >= s.n);
+        if (off){ if (lay) o += `<rect x="${tx}" y="${ty}" width="${tw}" height="${th}" rx="2" fill="url(#hatch)" opacity=".5" stroke="${LW}" stroke-dasharray="3 3" stroke-width=".8"/>`; continue; }
+        o += `<rect class="gt" id="gt-${id++}" x="${tx}" y="${ty}" width="${tw}" height="${th}" rx="2" fill="#4fc8e6" fill-opacity=".06" stroke="${LW}" stroke-width=".9"/><rect x="${tx+tw*.22}" y="${ty+th*.2}" width="${tw*.56}" height="${th*.6}" rx="1.5" fill="none" stroke="${LW}" stroke-width=".7" opacity=".5"/><line x1="${tx+tw*.5}" x2="${tx+tw*.5}" y1="${ty+th*.2}" y2="${ty+th*.8}" stroke="${LW}" stroke-width=".6" opacity=".45"/>`;
+      }
+      const by = ty0+rows*(th+4)+10, segN = 40, sw = (tilesW-(segN-1)*2)/segN;
+      for (let k=0;k<segN;k++) o += `<rect class="gb" id="gb-${k}" x="${s.x+12+k*(sw+2)}" y="${by}" width="${sw}" height="9" rx="1.5" fill="#4fc8e6" fill-opacity=".08"/>`;
+      o += `<text x="${s.x+12}" y="${by+25}" font-size="10.5" class="faint">One reading for all cores.</text><text x="${s.x+12}" y="${by+39}" font-size="10.5" class="faint">${lay?'Hatched: switched off, 16 of 20 on.':'Every core shares the glow.'}</text>`;
+      const ly0 = wideBlk ? s.y+22 : by+66;
+      o += `<text class="lbl" x="${lx}" y="${ly0}" style="font-size:9.5px;fill:#5fb9c4">RUNNING ON THE GPU</text>`;
+      for (let i=0;i<4;i++){
+        const ry = ly0+14+i*25, nameW = 112, trackX = lx+nameW+6, trackW = lw-nameW-6-44;
+        o += `<g class="app" data-app="${i}"><rect x="${lx-4}" y="${ry-4}" width="${lw+8}" height="24" fill="transparent"/>
+          <text id="an-${i}" x="${lx}" y="${ry+12}" font-size="11.5" style="fill:#d6dde8"></text>
+          <rect x="${trackX}" y="${ry+4}" width="${trackW}" height="6" rx="3" fill="rgba(255,255,255,.07)"/><rect id="ab-${i}" x="${trackX}" y="${ry+4}" width="0" height="6" rx="3" fill="#4fc8e6" opacity=".9"/>
+          <text id="ap-${i}" x="${lx+lw}" y="${ry+12}" text-anchor="end" font-size="11.5" class="num"></text></g>`;
+      }
+      o += `</g>`;
+    } else if (s.t==='fusion'){
+      o += `<rect x="${s.x}" y="${s.y}" width="${s.w}" height="${s.h}" rx="3" fill="none" stroke="${LW}" stroke-dasharray="6 5"/><text class="lbl" x="${s.x+s.w/2}" y="${s.y+s.h/2+3.5}" text-anchor="middle" style="font-size:9px;fill:#3f7f8c">FUSION INTERCONNECT · APPROX.</text>`;
+      for (let k=0;k<22;k++) o += `<line x1="${s.x+14+k*(s.w-28)/21}" x2="${s.x+14+k*(s.w-28)/21}" y1="${s.y-6}" y2="${s.y}" stroke="${LW}" opacity=".5"/><line x1="${s.x+14+k*(s.w-28)/21}" x2="${s.x+14+k*(s.w-28)/21}" y1="${s.y+s.h}" y2="${s.y+s.h+6}" stroke="${LW}" opacity=".5"/>`;
+    }
+  });
+  L.clusters.forEach((C,k)=>{
+    const col = TIER[C.cl.tier].color;
+    o += `<rect id="co-${k}" x="${C.x}" y="${C.y}" width="${C.w}" height="${C.h}" rx="4" fill="${col}" fill-opacity=".04" stroke="${col}" stroke-opacity=".55" stroke-width="1.2"/>
+      <text class="lbl" x="${C.x+14}" y="${C.y+24}" style="fill:${col};font-size:10.5px">${TIER[C.cl.tier].name.toUpperCase()}</text>
+      <text x="${C.x+C.w-14}" y="${C.y+24}" text-anchor="end" font-size="11.5" class="num dim" id="cm-${k}"></text>
+      <rect x="${C.x+12}" y="${C.y+C.h-32}" width="${C.w-24}" height="20" rx="2" fill="none" stroke="${col}" stroke-opacity=".4"/>
+      ${Array.from({length:Math.floor((C.w-40)/14)},(_,j)=>`<line x1="${C.x+20+j*14}" x2="${C.x+20+j*14}" y1="${C.y+C.h-30}" y2="${C.y+C.h-14}" stroke="${col}" stroke-opacity=".18"/>`).join('')}
+      <text class="lbl" x="${C.x+C.w/2}" y="${C.y+C.h-18}" text-anchor="middle" style="font-size:9px;fill:${col};fill-opacity:.8">L2 ${C.cl.l2} MB · shared by ${C.cl.n}</text>`;
+  });
+  L.cores.forEach(k=>{
+    const c = k.core, col = TIER[c.tier].color;
+    o += `<g class="core" data-core="${c.i}" tabindex="0" role="button" aria-label="${c.name}, ${TIER[c.tier].name} core">
+      <rect class="gh" id="gh-${c.i}" x="${k.x-2}" y="${k.y-2}" width="${k.w+4}" height="${k.h+4}" rx="7" fill="none" stroke="${col}" stroke-width="5" stroke-opacity="0" pointer-events="none"/>
+      <rect class="cr" id="cr-${c.i}" x="${k.x}" y="${k.y}" width="${k.w}" height="${k.h}" rx="5" fill="${col}" fill-opacity=".07" stroke="${col}" stroke-opacity=".7"/>
+      <rect x="${k.x+6}" y="${k.y+6}" width="${k.w-12}" height="${k.h-12}" rx="3" fill="none" stroke="${col}" stroke-opacity=".3" pointer-events="none"/>
+      <rect x="${k.x+12}" y="${k.y+12}" width="${k.w-24}" height="${k.h-24}" rx="2" fill="none" stroke="${col}" stroke-opacity=".18" pointer-events="none"/>
+      <rect id="ch-${c.i}" x="${k.x}" y="${k.y}" width="${k.w}" height="${k.h}" rx="5" fill="url(#hatch)" opacity="0" pointer-events="none"/>
+      <text class="cid mono" id="ci-${c.i}" x="${k.x+9}" y="${k.y+17}" font-size="10" style="font-family:var(--mono);font-weight:500;letter-spacing:.06em">${c.name}</text>
+      <text class="cu num" id="cu-${c.i}" x="${k.x+k.w/2}" y="${k.y+k.h/2+13}" text-anchor="middle" font-size="25"><tspan>0</tspan><tspan font-size="12" dx="1" font-weight="500">%</tspan></text>
+      <rect class="rim" x="${k.x}" y="${k.y}" width="${k.w}" height="${k.h}" rx="5"/>
+    </g>`;
+  });
+  const m = L.marks[0], big = S.narrow ? 30 : 38;
+  o += `<g class="mark" data-mark="1" tabindex="0"><rect x="${m.x}" y="${m.y}" width="${m.w}" height="${m.h}" rx="3" fill="rgba(46,169,198,.035)" stroke="${LW}" stroke-width="1.3"/>
+    <text x="${m.x+16}" y="${m.y+big+14}" font-size="${big}" font-weight="700" style="fill:url(#lw);letter-spacing:-.01em">${esc(ch.name.replace('Apple ',''))}</text>
+    <text class="lbl" x="${m.x+16}" y="${m.y+big+36}" style="fill:#4a8a96;font-size:10px">${ch.cores.length} CPU CORES${ch.twoDie?' · 2 DIES JOINED':''}</text>
+    <text class="lbl" id="mk-r" x="${m.x+16}" y="${m.y+m.h-14}" style="fill:#5fb9c4;font-size:9.5px"></text></g>`;
+  o += `<text x="${L.X0}" y="${L.H-12}" font-size="10.5" class="mono faint" style="letter-spacing:.05em">ORIGINAL LINE-ART FLOORPLAN · APPROXIMATE ARRANGEMENT · NOT TO SCALE</text>`;
+  $('#scene').innerHTML = o;
+  const svg = $('#die'); svg.setAttribute('viewBox',`0 0 ${L.W} ${L.H}`);
+  REFS = {L};
+  $('#winTitle').textContent = 'CPU · ' + ch.name;
+  updateDie(); renderPin();
+}
+
+function updateDie(){
+  const ch = CHIPS[S.chip], st = DIE_STATS[S.scen];
+  ch.cores.forEach(c=>{
+    const u = S.util[c.i], col = TIER[c.tier].color, op = .07 + .88*Math.pow(u/100,.85);
+    const r = document.getElementById('cr-'+c.i), t = document.getElementById('cu-'+c.i), id = document.getElementById('ci-'+c.i), h = document.getElementById('ch-'+c.i);
+    if (!r) return;
+    r.style.fillOpacity = op.toFixed(3);
+    const hh = document.getElementById('gh-'+c.i); if (hh) hh.style.strokeOpacity = u>60 ? ((u-60)/40*.45).toFixed(2) : '0';
+    const dark = op>.55; t.style.fill = dark ? '#04101a' : '#e8ecf2'; id.style.fill = dark ? '#0a1a2a' : '#9aa6b6';
+    t.firstChild.textContent = u;
+    const down = downPct(c); h.setAttribute('opacity', down>=50 ? .9 : 0);
+  });
+  document.querySelectorAll('[id^=cm-]').forEach((el,k)=>{
+    const cl = ch.clusters[k], mean = Math.round(cl.cores.reduce((a,c)=>a+S.util[c.i],0)/cl.n);
+    el.textContent = `${cl.n} cores · mean ${mean} %`;
+  });
+  const mk = document.getElementById('mk-r');
+  if (mk) mk.textContent = `DIE ${fmt(st.t)} °C · RAIL ≈ ${fmt(st.w)} W`;
+  updateGpu();
+  $('#win').classList.toggle('is-sample', !isReal());
+  if (S.pin!=null) fillPin();
+}
+function updateGpu(){
+  const g = S.gpu; if (!g) return;
+  const u = g.util, num = document.getElementById('gu-num'); if (!num) return;
+  num.firstChild.textContent = u; num.style.fill = u>=70 ? '#7fe3f2' : '#e8ecf2';
+  const op = (.06 + .5*Math.pow(u/100,.85)).toFixed(3);
+  document.querySelectorAll('.gt').forEach(t=>{ t.style.fillOpacity = op; });
+  const lit = Math.round(u/100*40);
+  document.querySelectorAll('.gb').forEach((b,k)=>{ b.style.fillOpacity = k<lit ? .85 : .08; });
+  for (let i=0;i<4;i++){
+    const a = g.apps[i], n = document.getElementById('an-'+i), b = document.getElementById('ab-'+i), p = document.getElementById('ap-'+i);
+    if (!n) continue;
+    if (!a){ n.textContent=''; p.textContent=''; b.setAttribute('width',0); continue; }
+    n.textContent = a[0]; p.textContent = '≈ '+a[1]+' %';
+    const track = b.previousElementSibling; b.setAttribute('width', (+track.getAttribute('width'))*clamp(a[1],0,100)/100);
+  }
+}
+
+/* residency: real only on the lead chip in "now"; the numbers come from the same 2 s measurement */
+function downPct(c){ return isReal() ? (c.cluster===2 ? 9 : 0) : (S.util[c.i]<=2 ? 70 : 0); }
+function residency(c){ const u = S.util[c.i], d = downPct(c); return {active:u, down:d, idle:Math.max(0,100-u-d)}; }
+
+/* ---------- tooltip + pinned detail ---------- */
+const TAG = {real:'REAL',est:'EST',ex:'SAMPLE'};
+const rowsHtml = rows => `<div class="rows">${rows.map(r=>`<span>${esc(r[0])}</span><span>${esc(r[1])}${r[2]?`<span class="tag ${r[2]}">${TAG[r[2]]}</span>`:''}</span>`).join('')}</div>`;
+function coreInfo(i){
+  const ch = CHIPS[S.chip], c = ch.cores[i], cl = ch.clusters[c.cluster], res = residency(c), tag = isReal()?'real':'ex';
+  return {c, cl, res, tag, title:`Core ${c.name} · ${TIER[c.tier].name}`,
+    sub:`Logical CPU ${c.cpu} · cluster ${c.cluster+1} of ${ch.clusters.length}`,
+    rows:[['Utilisation',`${S.util[i]} %`,tag],['Active · idle · down',`${res.active} · ${res.idle} · ${res.down} %`,tag],['Cluster L2',`${cl.l2} MB shared by ${cl.n}`,'']]};
+}
+const resBar = r => `<div class="res" title="active · idle · down"><i style="width:${r.active}%;background:#e8ecf2"></i><i style="width:${r.idle}%;background:rgba(255,255,255,.18)"></i><i style="width:${r.down}%;background:#ff9a3d"></i></div>`;
+function gpuInfo(){
+  const g = S.gpu, ch = CHIPS[S.chip], lay = ch.gpuLayout, tag = isReal()?'real':'ex';
+  return {title:`GPU · ${ch.gpu} cores`, sub: lay ? 'Two clusters · 16 of 20 cores enabled' : 'Whole GPU',
+    rows:[['Utilisation',`${g.util} %`,tag],['Performance state',`P${g.state} of 15 · ≈ ${fmt(g.mhz,0)} MHz`,'est'],['Temperature',`${g.temp} °C mean · ${g.peak} peak`,tag],['GPU power',`${g.pwr} W`,'ex'],['Memory in use',`${fmt(g.mem)} GB`,'ex']],
+    note:'macOS gives one load figure for the whole GPU. Per-core, per-cluster and per-die figures are not exposed, so every tile shares one glow and nothing is drawn per core.'};
+}
+const NA_NOTE = 'Frequency, per-core power and the process on this core are not exposed by macOS, so they are left out.';
+const stage = $('#stage'), tip = $('#tip'), pin = $('#pin');
+function place(el, target, pad=12, below=false){
+  const sr = stage.getBoundingClientRect(), tr = target.getBoundingClientRect();
+  el.style.display = el===pin ? (S.narrow?'block':'grid') : 'block'; const w = el.offsetWidth, h = el.offsetHeight;
+  if (below){
+    let y = tr.bottom - sr.top + 10;
+    el.style.left = clamp(tr.left - sr.left, 8, Math.max(8, sr.width - w - 8)) + 'px'; el.style.top = clamp(y, 8, Math.max(8, sr.height - h - 8)) + 'px'; return;
+  }
+  let x = tr.right - sr.left + pad, y = tr.top - sr.top - 6;
+  if (x + w > sr.width - 8) x = tr.left - sr.left - w - pad;
+  if (x < 8) x = clamp(tr.left - sr.left, 8, sr.width - w - 8);
+  y = clamp(y, 8, Math.max(8, sr.height - h - 8));
+  el.style.left = x+'px'; el.style.top = y+'px';
+}
+$('#die').addEventListener('pointermove',e=>{
+  const g = e.target.closest('[data-core]'), mk = e.target.closest('[data-mark]'), bk = e.target.closest('[data-blk]'), ap = e.target.closest('[data-app]');
+  if (g){ const i = +g.dataset.core; if (S.pin===i){ tip.style.display='none'; return; }
+    const d = coreInfo(i);
+    tip.innerHTML = `<h3>${esc(d.title)}</h3><div class="sub">${esc(d.sub)}</div>${rowsHtml(d.rows)}${resBar(d.res)}<div class="note" style="margin-top:8px">Click to pin details</div>`;
+    place(tip,g.querySelector('.cr')); return; }
+  if (mk){ const st = DIE_STATS[S.scen];
+    tip.innerHTML = `<h3>Whole processor</h3><div class="sub">Die-level, not per core</div>${rowsHtml([['CPU die temperature',`${fmt(st.t)} °C mean`,isReal()?'real':'ex'],['Sensors','23 die sensors, no verified core map'],['CPU power rail',`≈ ${fmt(st.w)} W`,isReal()?'est':'ex']])}<div class="note">One reading for the whole CPU. Dividing it across cores would be invented, so each core shows load only.</div>`;
+    place(tip,mk.querySelector('rect')); return; }
+  if (ap && S.gpu.apps[+ap.dataset.app]){ const a = S.gpu.apps[+ap.dataset.app];
+    tip.innerHTML = `<h3>${esc(a[0])}</h3><div class="sub">Using the GPU</div>${rowsHtml([['GPU time',`≈ ${a[1]} % of the last second`,isReal()?'real':'ex']])}<div class="note">From the GPU driver’s own per-app counters, so an app’s helper processes can appear as separate rows. macOS cuts names to 15 characters.</div>`;
+    place(tip,ap.querySelector('rect')); return; }
+  if (bk && bk.dataset.blk==='GPU'){ const d = gpuInfo();
+    tip.innerHTML = `<h3>${esc(d.title)}</h3><div class="sub">${esc(d.sub)}</div>${rowsHtml(d.rows)}<div class="note">${esc(d.note)}</div><div class="note" style="margin-top:6px">Click to pin details</div>`;
+    place(tip,bk.querySelector('rect')); return; }
+  if (bk){ const b = BLK[bk.dataset.blk]; if (b){ tip.innerHTML = `<h3>${esc(b.t)}</h3><div class="sub">Context block, not measured</div><div class="note" style="margin-top:0">${esc(b.d)}</div>`; place(tip,bk.querySelector('rect')); return; } }
+  tip.style.display='none';
+});
+$('#die').addEventListener('pointerleave',()=>{ tip.style.display='none'; });
+function pinCore(i){ S.pin = i; markPinned(); tip.style.display='none'; fillPin(); positionPin(); }
+function markPinned(){ document.querySelectorAll('.core').forEach(g=>g.classList.toggle('pinned',S.pin!=='gpu' && +g.dataset.core===S.pin)); }
+function positionPin(){
+  if (S.pin==null) return;
+  const tgt = S.pin==='gpu' ? document.getElementById('gpu-box') : document.querySelector(`[data-core="${S.pin}"] .cr`);
+  if (!tgt) return;
+  const sr = stage.getBoundingClientRect(), tr = tgt.getBoundingClientRect(), fr = document.getElementById('die-frame').getBoundingClientRect();
+  pin.style.display = 'grid'; const w = pin.offsetWidth, h = pin.offsetHeight;
+  if (!S.narrow){   // wide: the card sits in the gutter beside the die, level with the thing it describes
+    pin.style.left = clamp(fr.right-sr.left+14, 8, Math.max(8,sr.width-w-8))+'px';
+    pin.style.top = clamp(tr.top-sr.top-24, 8, Math.max(8,sr.height-h-8))+'px'; return; }
+  pin.style.left = clamp(fr.left-sr.left+8, 8, Math.max(8,sr.width-w-8))+'px';
+  pin.style.top = clamp(tr.bottom-sr.top+10, 8, Math.max(8,sr.height-h-8))+'px';
+}
+function fillPin(){
+  if (S.pin==null){ pin.style.display='none'; return; }
+  const gp = S.pin==='gpu', d = gp ? gpuInfo() : coreInfo(S.pin), h = gp ? S.gh : S.hist[S.pin], col = gp ? '#4fc8e6' : TIER[d.c.tier].color;
+  const W = 300, Hh = 64, xs = i => 4 + i/(h.length-1)*(W-8), ys = v => 4 + (1-v/100)*(Hh-8);
+  const path = h.map((v,i)=>`${i?'L':'M'}${xs(i).toFixed(1)} ${ys(v).toFixed(1)}`).join(' ');
+  pin.classList.add('one');
+  pin.innerHTML = `<button class="x" id="pinX" aria-label="Close detail">✕</button><div class="pc1"><h3>${esc(d.title)}</h3><div class="sub">${esc(d.sub)}</div>${rowsHtml(d.rows)}${gp?'':resBar(d.res)}</div><div class="pc2">
+    <svg viewBox="0 0 ${W} ${Hh}" preserveAspectRatio="none"><line x1="0" x2="${W}" y1="${ys(50)}" y2="${ys(50)}" stroke="rgba(255,255,255,.07)"/><path d="${path} L${xs(h.length-1)} ${Hh-4} L4 ${Hh-4} Z" fill="${col}" opacity=".16"/><path d="${path}" fill="none" stroke="${col}" stroke-width="1.8" stroke-linejoin="round"/><circle cx="${xs(h.length-1)}" cy="${ys(h[h.length-1])}" r="3" fill="${col}"/></svg>
+    <div class="cap">Load · since you opened this view <span class="tag ex">SAMPLE</span></div><div class="note">${gp ? d.note : NA_NOTE}</div></div>`;
+  pin.style.display = 'grid'; $('#pinX').onclick = () => { S.pin=null; document.querySelectorAll('.core.pinned').forEach(g=>g.classList.remove('pinned')); pin.style.display='none'; };
+}
+function renderPin(){ if (S.pin!=null){ markPinned(); fillPin(); positionPin(); } }
+$('#die').addEventListener('click',e=>{ const g = e.target.closest('[data-core]'), gb = e.target.closest('[data-blk="GPU"]');
+  if (g) pinCore(+g.dataset.core);
+  else if (gb){ S.pin='gpu'; markPinned(); tip.style.display='none'; fillPin(); positionPin(); }
+  else { S.pin=null; markPinned(); pin.style.display='none'; } });
+$('#die').addEventListener('keydown',e=>{ if ((e.key==='Enter'||e.key===' ') && e.target.closest('[data-core]')){ e.preventDefault(); pinCore(+e.target.closest('[data-core]').dataset.core); } if (e.key==='Escape'){ S.pin=null; pin.style.display='none'; } });
+
+/* ---------- controls ---------- */
+function defaultPin(){ /* a core, so the first view shows the hover card */ const ch = CHIPS[S.chip]; const top = firstOfTop(ch); const cl = ch.clusters[ch.cores[top].cluster]; return cl.cores[Math.min(2,cl.n-1)].i; }
+function seg(id,items,key){
+  const el = $(id);
+  el.innerHTML = items.map(([v,l])=>`<button data-v="${v}" aria-pressed="${S[key]===v}">${esc(l)}</button>`).join('');
+  el.onclick = e => { const b = e.target.closest('button'); if(!b) return; S[key] = b.dataset.v; seg(id,items,key); resetValues(); if (key==='chip') S.pin = defaultPin(); build(); renderNotes(); };
+}
+seg('#chipSeg',Object.entries(CHIPS).map(([k,v])=>[k,v.label]),'chip');
+seg('#scenSeg',[['now','This Mac, right now'],['burst','One core flat out'],['mixed','Typical mixed'],['all','All cores loaded']],'scen');
+$('#liveTog').onclick = e => { S.live = !S.live; e.currentTarget.setAttribute('aria-pressed',S.live); };
+$('#narrowTog').onclick = e => { S.forceNarrow = !S.forceNarrow; e.currentTarget.setAttribute('aria-pressed',S.forceNarrow); $('#win').classList.toggle('narrow-preview',S.forceNarrow); };
+function checkNarrow(){ const n = $('#stage').getBoundingClientRect().width < 640; if (n !== S.narrow){ S.narrow = n; build(); } }
+new ResizeObserver(checkNarrow).observe($('#stage'));
+setInterval(()=>{ if (S.live && document.visibilityState==='visible'){ jitter(); updateDie(); } }, 1600);
+
+/* ---------- notes ---------- */
+function renderNotes(){
+  const ch = CHIPS[S.chip];
+  $('#notes').innerHTML = `
+  <section><h2>${esc(ch.label)}</h2><ul><li>${esc(ch.conf)}</li>
+    <li>${ch.cores.some(c=>c.tier==='E')?'Core types come from the chip’s own data, never from a fixed P and E assumption.':'This chip has no Efficiency cores. Tiers are named by what the kernel reports, here Super and Performance.'}</li>
+    <li>No free-to-use die photo exists for these chips, so the floorplan is drawn from the data: right core counts, right tiers, right cluster grouping, approximate placement.</li></ul></section>
+  <section><h2>What each tile shows</h2><ul>
+    <li><b>Colour</b> is the core’s type. <b>Brightness and glow</b> are its load, smoothed so tiles never flicker.</li>
+    <li><b>Hatched</b> means the core is powered down. That is a measured state.</li>
+    <li><b>Hover</b> for the core, its type, load, time active, idle and down, and its cluster’s cache. <b>Click</b> to pin and see load history.</li>
+    <li><b>Die markings</b> carry the only whole-processor readings: temperature and CPU power rail.</li></ul></section>
+  <section><h2>What I left out, and why</h2><ul>
+    <li><b>Per-core frequency.</b> macOS gives time-in-state, not megahertz, on this chip. No guess is printed.</li>
+    <li><b>Per-core power.</b> Not measurable on M5; only the whole CPU rail is. Never split across cores.</li>
+    <li><b>Per-core temperature.</b> 23 die sensors, no trustworthy map to cores. One die mean instead.</li>
+    <li><b>Process on a core.</b> macOS has no public call for it. See the next card.</li></ul></section>
+  <section><h2>The GPU</h2><ul>
+    <li><b>One glow for the whole GPU.</b> macOS reports a single load figure, so every tile shares it. Lighting tiles one by one would be invented, so nothing is.</li>
+    <li><b>What is running is real.</b> The GPU driver counts GPU time per app. The list shows each app’s share over the last second, marked as approximate.</li>
+    <li><b>The 16 of 20 cores is real</b> too, read from the GPU’s own configuration: two clusters of ten, two switched off in each. Hatched tiles are those.</li>
+    <li><b>Not exposed:</b> any per-core, per-cluster or per-die load, power or heat. The Mac’s GPU temperature sensors cannot be tied to cores either, so only a mean and peak show.</li></ul></section>
+  <section><h2>Processes and cores</h2><ul>
+    <li>Ultra Low Power mode does not place anything on a core. It sets the system’s <b>background policy</b> on a process (<span class="mono">PRIO_DARWIN_BG</span>), and the scheduler then prefers efficiency cores. Anode never learns which core ran what. On this M5 Pro there are no efficiency cores, so that step is skipped.</li>
+    <li>A thread’s info record has no core number. The values that looked like one in my first pass are scheduler <b>priorities</b>.</li>
+    <li>True attribution means reading the kernel’s scheduling trace, which needs the root helper and costs power while it runs. Possible later as an on-demand “what is running here” for one pinned core. Not v1.</li></ul></section>
+  <section><h2>Artwork</h2><ul>
+    <li>Apple’s published chip art is copyrighted, and Apple’s rules require written permission for its images and bar its logo outright. So this is <b>original</b> line art in a similar spirit: thin gradient lines, nested blocks, one motif per part.</li>
+    <li>Core counts, tiers and cluster grouping come from data. Arrangement is stylized and labelled as such.</li></ul></section>
+  <section><h2>Calls to check</h2><ul>
+    <li>Logical CPU numbers do not follow tier order on this Mac (Performance cores are 0–9, Super are 10–14). The build reads the real map from the kernel.</li>
+    <li>The two-die M5 Pro drawing follows Apple’s “Fusion” description. How the clusters sit on it is inferred.</li>
+    <li>Cost: per-core load is about 0.03 ms a read on the tick Anode already runs. The time-in-state read is about 5 ms, so it runs only while this view is open. Tiles repaint only when a value changes.</li></ul></section>`;
+}
+resetValues(); S.pin = defaultPin(); build(); renderNotes(); checkNarrow();
+</script>

@@ -33,13 +33,13 @@ final class ViewMenuOrderTests: XCTestCase {
                            .filter { $0.isOffered(whenFans: FanPresence.onThisMac) }.count)
     }
 
-    /// Every tab except Fans is unconditional, on every machine. A tab that
-    /// quietly became conditional would be a feature disappearing with no
+    /// Every tab except Fans is unconditional, on every machine (Hardware included: its picture is chosen from the Mac's
+    /// traits, so every Mac gets one). A tab that quietly became conditional would be a feature disappearing with no
     /// evidence behind it.
     func testOnlyTheFansTabIsEverHidden() {
         for state: FanPresence.State in [.fanless, .unknown, .fans(1), .fans(2)] {
             let offered = Set(SidebarView.Lens.order(whenFans: state))
-            XCTAssertTrue(offered.isSuperset(of: [.processes, .resources, .network, .sensors]),
+            XCTAssertTrue(offered.isSuperset(of: [.processes, .resources, .network, .sensors, .hardware]),
                           "a tab other than Fans went missing on \(state)")
         }
     }
@@ -63,18 +63,26 @@ final class ViewMenuOrderTests: XCTestCase {
                        (1...items.count).map(String.init))
     }
 
-    /// The rail is the five tabs asked for and nothing else. Written out rather
+    /// The rail is the six tabs asked for and nothing else. Written out rather
     /// than derived: this list is the specification, and a test that recomputed it
     /// from `allCases` would agree with any tab added or removed by accident.
-    func testTheRailIsTheFiveTabsOnAMachineWithFans() {
+    func testTheRailIsTheSixTabsOnAMachineWithFans() {
         XCTAssertEqual(SidebarView.Lens.order(whenFans: .fans(2)).map(\.rawValue),
-                       ["processes", "resources", "network", "sensors", "fans"])
+                       ["processes", "resources", "network", "sensors", "fans", "hardware"])
+    }
+
+    /// On a Mac with fans Hardware is the sixth and last tab, so it is the next free number: ⌘6.
+    func testHardwareIsCommandSixOnAMachineWithFans() {
+        let items = ViewMenu.lensItems(for: SidebarView.Lens.order(whenFans: .fans(2)))
+        XCTAssertEqual(items.last?.lens, .hardware)
+        XCTAssertEqual(items.last?.key, "6")
+        XCTAssertEqual(items.last?.lens.title, "Hardware")
     }
 
     /// A MacBook Air has nothing to put in the Fans tab, so it does not get one.
     func testAFanlessMacHasNoFansTab() {
         XCTAssertEqual(SidebarView.Lens.order(whenFans: .fanless).map(\.rawValue),
-                       ["processes", "resources", "network", "sensors"])
+                       ["processes", "resources", "network", "sensors", "hardware"])
     }
 
     /// "The SMC would not answer" is not "this machine has no fans". Hiding the
@@ -82,7 +90,7 @@ final class ViewMenuOrderTests: XCTestCase {
     /// has one, and leave nothing on screen to suggest it ever existed.
     func testAnUnreadableSMCKeepsTheFansTab() {
         XCTAssertEqual(SidebarView.Lens.order(whenFans: .unknown).map(\.rawValue),
-                       ["processes", "resources", "network", "sensors", "fans"])
+                       ["processes", "resources", "network", "sensors", "fans", "hardware"])
     }
 
     /// Whatever this machine is, the live rail is what its fan presence says it
@@ -102,21 +110,21 @@ final class ViewMenuOrderTests: XCTestCase {
     func testTheViewMenuFollowsTheRailWhenATabIsHidden() {
         let items = ViewMenu.lensItems(for: SidebarView.Lens.order(whenFans: .fanless))
         XCTAssertEqual(items.map(\.lens.title),
-                       ["Processes", "Resources", "Network", "Sensors"])
-        XCTAssertEqual(items.map(\.key), ["1", "2", "3", "4"])
+                       ["Processes", "Resources", "Network", "Sensors", "Hardware"])
+        XCTAssertEqual(items.map(\.key), ["1", "2", "3", "4", "5"])
         XCTAssertFalse(items.contains { $0.lens == .fans },
-                       "⌘5 would open a tab the rail does not draw")
+                       "a ⌘ number would open a tab the rail does not draw")
     }
 
     /// And the rail itself, built for real. `rowTitles` reads what the rail
     /// exposes to a user — accessibility buttons — so this is the drawn rail,
     /// not a list kept for the test's benefit.
-    func testAFanlessRailDrawsFourRowsAndNoFanRow() {
+    func testAFanlessRailDrawsFiveRowsAndNoFanRow() {
         _ = appKitForTests
         let rail = SidebarView(frame: NSRect(x: 0, y: 0, width: 200, height: 600),
                                lenses: SidebarView.Lens.order(whenFans: .fanless))
         XCTAssertEqual(rowTitles(in: rail),
-                       ["Processes", "Resources", "Network", "Sensors"])
+                       ["Processes", "Resources", "Network", "Sensors", "Hardware"])
     }
 
     /// Selecting a tab this machine does not draw must change nothing. A menu bar

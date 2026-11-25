@@ -22,7 +22,7 @@ import PowerKit
 final class SidebarView: NSView {
 
     enum Lens: String, CaseIterable {
-        case processes, resources, network, sensors, fans
+        case processes, resources, network, sensors, fans, hardware
 
         var title: String {
             switch self {
@@ -31,6 +31,7 @@ final class SidebarView: NSView {
             case .network:   return "Network"
             case .sensors:   return "Sensors"
             case .fans:      return "Fans"
+            case .hardware:  return "Hardware"
             }
         }
 
@@ -38,7 +39,7 @@ final class SidebarView: NSView {
         var isPerProcess: Bool {
             switch self {
             case .processes: return true
-            case .resources, .network, .sensors, .fans: return false
+            case .resources, .network, .sensors, .fans, .hardware: return false
             }
         }
 
@@ -64,23 +65,27 @@ final class SidebarView: NSView {
             // NOT `wind`, which is moving air rather than the thing moving it.
             // Blades also give the icon somewhere to turn — see `FanIconSpin`.
             case .fans:      return "fanblades"
+            // A laptop drawn from the inside: the tab is the Mac itself with a reading on each part. Shipped in SF Symbols 1.
+            case .hardware:  return "laptopcomputer"
             }
         }
 
         /// Whether this machine has anything to put in this tab.
         ///
-        /// Only Fans can answer no, and only on a machine the SMC says has no
-        /// fans — a MacBook Air, or a fanless desktop. `FanPresence` is where the
-        /// evidence rule lives: a machine whose SMC could not be read is
-        /// `.unknown` and keeps the tab, because "not measured" has never been
-        /// allowed to mean "none" anywhere else in this app either.
+        /// Fans answers no only on a machine the SMC says has no fans — a MacBook Air, or a fanless desktop. `FanPresence` is
+        /// where the evidence rule lives: a machine whose SMC could not be read is `.unknown` and keeps the tab, because "not
+        /// measured" has never been allowed to mean "none" anywhere else in this app either.
+        ///
+        /// Hardware answers no on a Mac whose internal layout has not been added yet (`hardwareKnown` false): a wrong picture
+        /// is worse than no tab, so a Mac the layouts do not describe is not offered a generic schematic at all.
         ///
         /// Exhaustive rather than defaulted, so a lens added later has to say
         /// whether it is conditional instead of inheriting an answer.
-        func isOffered(whenFans fans: FanPresence.State) -> Bool {
+        func isOffered(whenFans fans: FanPresence.State, hardwareKnown: Bool = true) -> Bool {
             switch self {
             case .processes, .resources, .network, .sensors: return true
             case .fans: return FanPresence.showsFanTab(fans)
+            case .hardware: return hardwareKnown
             }
         }
 
@@ -89,20 +94,29 @@ final class SidebarView: NSView {
         ///
         /// Takes the machine as an argument so both answers can be tested on one
         /// Mac; `displayOrder` below is this applied to the Mac we are on.
-        static func order(whenFans fans: FanPresence.State) -> [Lens] {
-            let offered = allCases.filter { $0.isOffered(whenFans: fans) }
+        static func order(whenFans fans: FanPresence.State, hardwareKnown: Bool = true) -> [Lens] {
+            let offered = allCases.filter { $0.isOffered(whenFans: fans, hardwareKnown: hardwareKnown) }
             return offered.filter(\.isPerProcess) + offered.filter { !$0.isPerProcess }
         }
 
         /// `build()` and the View menu both read this, so a lens added to
-        /// `allCases` reaches the rail and ⌘1…⌘5 together or not at all, and a
+        /// `allCases` reaches the rail and the ⌘ numbers together or not at all, and a
         /// lens this machine cannot show is missing from both. The menu used to be
         /// the kind of thing that silently desynced from the sidebar; there is
         /// still no second list to forget.
         ///
         /// Resolved once, at first use: `FanPresence.onThisMac` reads the SMC and
         /// a Mac does not grow a fan while it is running.
-        static let displayOrder: [Lens] = order(whenFans: FanPresence.onThisMac)
+        ///
+        /// Whether the Hardware tab is offered is decided the same way, from the layout this Mac resolves to: resolved once,
+        /// like the fans. A MacBook started with its lid shut has no built-in display to measure and so resolves to no known
+        /// layout until the next launch.
+        static let displayOrder: [Lens] = order(whenFans: FanPresence.onThisMac,
+                                                hardwareKnown: thisMacHasHardwareLayout)
+
+        /// True when `MacFamilyResolver` recognises this Mac, that is, when it resolves to anything but the generic schematic.
+        static let thisMacHasHardwareLayout: Bool =
+            MacFamilyResolver.resolve(HardwareViewRuntime.traits()) != .generic
 
         /// The metric whose current value is appended to the tooltip.
         ///
@@ -115,6 +129,8 @@ final class SidebarView: NSView {
             case .network:   return .networkThroughput
             case .sensors:   return .cpuTemperature
             case .fans:      return .fanSpeed
+            // One picture of the whole Mac: no single reading stands for it.
+            case .hardware:  return nil
             }
         }
 
@@ -134,6 +150,8 @@ final class SidebarView: NSView {
                 return "Every temperature the SMC will report."
             case .fans:
                 return "Fan speeds and their range."
+            case .hardware:
+                return "Your Mac drawn from the inside, with every reading on the part it belongs to."
             }
         }
 
@@ -150,6 +168,8 @@ final class SidebarView: NSView {
             case .network:   return .network
             // Both read temperatures or fan speeds, which is one SMC sweep.
             case .sensors, .fans: return .sensors
+            // The picture puts a reading on every part: processor, memory, graphics, network, drive and sensors.
+            case .hardware: return [.cpu, .memory, .gpu, .network, .disk, .sensors]
             }
         }
     }
