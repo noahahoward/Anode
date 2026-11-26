@@ -79,7 +79,7 @@ liquid glass (the `.clear` style) with a black tint over it; Clipboard History i
 | | measured | |
 | --- | --- | --- |
 | Bar | 520 × 87 pt, a full capsule (radius 43.5); text starts 39 pt in, about 21 pt; the picture of the match 33 pt at the right | tint: black 1.0 at the top, 0.61 at the bottom, no rim at the top, a rim at the bottom |
-| Card | up to 410 pt, top corners about 38; chips 25 pt tall at 21 pt from its top; rows 62 pt apart; icon 36, title 17, selection a capsule inset 14.5 | tint: 0.55 at the top, 0.30 at 410 pt down; rims at both edges |
+| Card | up to 410 pt, top corners about 38; chips 25 pt tall at 21 pt from its top; rows 62 pt apart; icon 36, title 17, selection a rounded rectangle inset 12, corners of 24 | tint: 0.55 at the top, 0.30 at 410 pt down; rims at both edges |
 | Place | centred; the top edge is where a 137 pt window would be centred at 30% of the screen's height (282 of 1169 on this Mac); the window grows downwards | it can be dragged by the bar and opens where it was left (below) |
 | Opening | opacity 0 to 1 evenly over about 0.11 s, while it scales from about 13% larger, about the middle of that 137 pt window, on a spring (period about 0.28 s, damping 0.72, a dip of 0.6% under its size) | sampled from the fitted curve every 1/120 s |
 | Closing | opacity 1 to 0 evenly over about 0.11 s while it grows to about 7% larger | |
@@ -95,6 +95,9 @@ Dragging (logged from the system's window every 10 ms): it follows the pointer o
 default height within 5 points (a tick from the trackpad), is held until the pointer has pulled it 24 points sideways or 16 up or down,
 stops at the screen's edges and under the menu bar (the pointer may go on; it comes back when the pointer does), and opens again where it
 was left. It is whole points, so the hard rims stay on the pixels. All of it is `ClipboardPlacement`.
+
+The measuring tools are kept beside the checkout, in `Anode-spotlight-probe/` (not in the repo): `session.sh` makes one on-screen pass
+over striped and solid backdrops and keeps row numbers only, so no picture of the real search stays on disk.
 
 The chips are the kinds in the history (Text, Links, Images, Files, Pinned); Tab moves along them, Shift-Tab back.
 
