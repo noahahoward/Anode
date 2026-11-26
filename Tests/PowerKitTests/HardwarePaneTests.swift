@@ -90,19 +90,29 @@ final class HardwarePaneTests: XCTestCase {
         XCTAssertFalse(pane.stage.canvas.isDrawableNow())
     }
 
-    func testACoveredPaneDoesNotMarkTheCanvasForDisplayOnUpdate() {
+    func testACoveredPaneNeitherDrawsNorTurnsItsFansOnUpdate() {
+        _ = NSApplication.shared
         let pane = make()
         let canvas = pane.stage.canvas
+        defer { pane.reset() }
+
+        // Whether a drawable canvas then marks itself for display is the canvas's own test; the pane's part is to say whether
+        // anyone can see it, and nothing may turn while nobody can.
         pane.isDrawable = { false }
-        canvas.needsDisplay = false
-        // The same layout the pane started with, so only the reading, the history and the charge history are new.
-        push(pane, family: .generic, readings: HardwareReadings(helperInstalled: true), charge: [5, nil, 7],
-             widgets: [MenuBarWidgetText(label: "CPU", value: "41")])
-        XCTAssertFalse(canvas.needsDisplay, "covered: nothing is repainted")
+        push(pane, family: .generic, readings: fans(), charge: [5, nil, 7])
+        XCTAssertFalse(canvas.isDrawableNow(), "covered: nothing is drawn")
+        XCTAssertFalse(canvas.isAnimatingFans, "covered: nothing turns")
 
         pane.isDrawable = { true }
-        push(pane, family: .generic, readings: HardwareReadings(helperInstalled: true), charge: [5, nil, 8])
-        XCTAssertTrue(canvas.needsDisplay, "visible: the new reading is painted")
+        push(pane, family: .generic, readings: fans(), charge: [5, nil, 8])
+        XCTAssertTrue(canvas.isDrawableNow(), "visible: the new reading is painted")
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            XCTAssertTrue(canvas.isAnimatingFans, "visible with spinning fans: the blades turn")
+        }
+
+        pane.isDrawable = { false }
+        push(pane, family: .generic, readings: fans(), charge: [5, nil, 9])
+        XCTAssertFalse(canvas.isAnimatingFans, "covered again: they stop")
     }
 
     // MARK: Data

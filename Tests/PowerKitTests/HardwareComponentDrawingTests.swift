@@ -387,9 +387,20 @@ final class HardwareComponentDrawingTests: XCTestCase {
         let without = try paintPiece(.battery, canvas(.macBookPro14Base, readings: readings, history: []))
         let allGaps = try paintPiece(.battery, canvas(.macBookPro14Base, readings: readings, history: [nil, nil, nil]))
         let with = try paintPiece(.battery, canvas(.macBookPro14Base, readings: readings, history: history))
-        let none = changedPixels(without.rep, in: cell, margin: 0)
-        XCTAssertEqual(changedPixels(allGaps.rep, in: cell, margin: 0), none)
-        XCTAssertGreaterThan(changedPixels(with.rep, in: cell, margin: 0), none)
+        // The cell's plate covers the ground, so "differs from the ground" is the whole cell either way: compare the pictures.
+        XCTAssertEqual(differingPixels(without.rep, allGaps.rep, in: cell), 0, "only gaps: nothing is drawn for them")
+        XCTAssertGreaterThan(differingPixels(without.rep, with.rep, in: cell), 0, "samples: the line is drawn")
+    }
+
+    private func differingPixels(_ a: NSBitmapImageRep, _ b: NSBitmapImageRep, in rect: HWRect) -> Int {
+        var count = 0
+        for y in max(0, Int(rect.y))..<min(a.pixelsHigh, b.pixelsHigh, Int(rect.y + rect.h)) {
+            for x in max(0, Int(rect.x))..<min(a.pixelsWide, b.pixelsWide, Int(rect.x + rect.w)) {
+                let p = pixel(a, x: x, y: y), q = pixel(b, x: x, y: y)
+                if abs(p.r - q.r) > 3 || abs(p.g - q.g) > 3 || abs(p.b - q.b) > 3 { count += 1 }
+            }
+        }
+        return count
     }
 
     func testTheWholeLayoutPaintsThroughTheCanvasDispatch() throws {
