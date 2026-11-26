@@ -101,11 +101,13 @@ final class HardwarePaneTests: XCTestCase {
         pane.isDrawable = { false }
         push(pane, family: .generic, readings: fans(), charge: [5, nil, 7])
         XCTAssertFalse(canvas.isDrawableNow(), "covered: nothing is drawn")
+        XCTAssertEqual(canvas.dataRepaints, 0, "covered: new data asks for no repaint")
         XCTAssertFalse(canvas.isAnimatingFans, "covered: nothing turns")
 
         pane.isDrawable = { true }
         push(pane, family: .generic, readings: fans(), charge: [5, nil, 8])
-        XCTAssertTrue(canvas.isDrawableNow(), "visible: the new reading is painted")
+        XCTAssertTrue(canvas.isDrawableNow())
+        XCTAssertGreaterThan(canvas.dataRepaints, 0, "visible: the new reading is painted")
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             XCTAssertTrue(canvas.isAnimatingFans, "visible with spinning fans: the blades turn")
         }

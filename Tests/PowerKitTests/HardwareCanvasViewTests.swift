@@ -82,56 +82,34 @@ final class HardwareCanvasViewTests: XCTestCase {
         XCTAssertTrue(found, "no layout has a three-reading battery cell, so this checked nothing")
     }
 
-    /// Windows the hosted canvases live in. Never ordered front, so nothing is shown, but a view in a window answers
-    /// `needsDisplay` the way it does on screen.
-    private var hostWindows: [NSWindow] = []
-
-    private func hosted(_ family: MacFamily, width: CGFloat = 550, height: CGFloat = 1205) -> HardwareCanvasView {
-        _ = NSApplication.shared
-        let v = view(family, width: width, height: height)
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.borderless],
-                              backing: .buffered, defer: true)
-        window.isReleasedWhenClosed = false
-        window.contentView?.addSubview(v)
-        hostWindows.append(window)
-        return v
-    }
-
-    override func tearDown() {
-        hostWindows.forEach { $0.contentView = nil }
-        hostWindows.removeAll()
-        super.tearDown()
-    }
-
     func testReadingsRepaintOnlyWhenTheOwnerSaysItIsDrawable() {
-        let v = hosted(.macBookNeo)
-        v.needsDisplay = false
+        let v = view(.macBookNeo)
         v.isDrawableNow = { false }
         v.readingsChanged()
-        XCTAssertFalse(v.needsDisplay)
+        XCTAssertEqual(v.dataRepaints, 0)
         v.isDrawableNow = { true }
         v.readingsChanged()
-        XCTAssertTrue(v.needsDisplay)
+        XCTAssertEqual(v.dataRepaints, 1)
     }
 
     func testTheWidgetsAndTheChargeHistoryRepaintNothingWhileCovered() {
-        let v = hosted(.macBookNeo)
+        let v = view(.macBookNeo)
         v.isDrawableNow = { false }
-        v.needsDisplay = false
         v.menuBarWidgets = [MenuBarWidgetText(label: "CPU", value: "41")]
-        XCTAssertFalse(v.needsDisplay, "a covered window repaints nothing for a new widget")
+        XCTAssertEqual(v.dataRepaints, 0, "a covered window repaints nothing for a new widget")
         v.chargeHistory = [10, 20, nil, 40]
-        XCTAssertFalse(v.needsDisplay, "nor for a new charge history")
+        XCTAssertEqual(v.dataRepaints, 0, "nor for a new charge history")
         // The values are kept, so the repaint that comes when it is uncovered shows them.
         XCTAssertEqual(v.menuBarWidgets.count, 1)
         XCTAssertEqual(v.chargeHistory.count, 4)
 
         v.isDrawableNow = { true }
         v.menuBarWidgets = []
-        XCTAssertTrue(v.needsDisplay)
-        v.needsDisplay = false
+        XCTAssertEqual(v.dataRepaints, 1)
         v.chargeHistory = []
-        XCTAssertTrue(v.needsDisplay)
+        XCTAssertEqual(v.dataRepaints, 2)
+        v.chargeHistory = []
+        XCTAssertEqual(v.dataRepaints, 2, "the same history again asks for nothing")
     }
 
     // MARK: Paint order, culling and the narrow caption

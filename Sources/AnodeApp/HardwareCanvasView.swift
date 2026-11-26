@@ -34,13 +34,13 @@ final class HardwareCanvasView: NSView {
     /// What Anode's own menu bar widgets show right now, drawn in the display's menu bar (label above value). The owner of the
     /// canvas fills it; empty draws only Anode's glyph.
     var menuBarWidgets: [MenuBarWidgetText] = [] {
-        didSet { if menuBarWidgets != oldValue, isDrawableNow() { needsDisplay = true } }
+        didSet { if menuBarWidgets != oldValue { repaintForNewData() } }
     }
 
     /// The battery's charge in percent over the last 24 hours, oldest first (nil = no sample then), for the battery cell that
     /// shows the chart. The owner fills it; empty draws the cell's name only. The scale is fixed at 0...100.
     var chargeHistory: [Double?] = [] {
-        didSet { if chargeHistory != oldValue, isDrawableNow() { needsDisplay = true } }
+        didSet { if chargeHistory != oldValue { repaintForNewData() } }
     }
 
     /// A narrow window shows one part at a time: while `focusRect` is set the canvas shows that part of the layout, at the
@@ -107,7 +107,18 @@ final class HardwareCanvasView: NSView {
     /// Repaint for a new reading, but only when the owner says the picture can be seen.
     func readingsChanged() {
         refreshFanAnimation()
-        if isDrawableNow() { needsDisplay = true }
+        repaintForNewData()
+    }
+
+    /// How often new data has asked for a repaint. AppKit does not say reliably (`needsDisplay` cannot be cleared on a view in
+    /// a window that was never shown), so the tests of "covered: nothing is repainted" read this.
+    private(set) var dataRepaints = 0
+
+    /// New data was stored: repaint, but only if someone can see it. Uncovering repaints everything anyway.
+    private func repaintForNewData() {
+        guard isDrawableNow() else { return }
+        dataRepaints += 1
+        needsDisplay = true
     }
 
     override func viewDidMoveToWindow() {
