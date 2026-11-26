@@ -60,6 +60,9 @@ public enum BottomContext: String, CaseIterable {
         case .network:   return .network
         case .sensors:   return .sensors
         case .fans:      return .fans
+        // The whole Mac drawn as one picture has no single subject. The bottom stays what it is for the process table's default,
+        // the battery: the ledger and its graph under every other tab keep telling what the app is for.
+        case .hardware:  return .battery
         }
     }
 

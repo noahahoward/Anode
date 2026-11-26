@@ -48,14 +48,14 @@ final class LensSamplingNeedsTests: XCTestCase {
 
     /// The expensive one. `Sensors.inventory()` walks thousands of SMC keys —
     /// measured at 88 ms wall / 9.1 ms CPU a sweep, and enough to double idle CPU
-    /// (0.375% → 0.727%) when it was taken unconditionally. Only the three tabs that
-    /// display a temperature or a fan speed may ask for it.
+    /// (0.375% → 0.727%) when it was taken unconditionally. Only the four tabs that
+    /// display a temperature or a fan speed may ask for it (Hardware draws both on the parts they belong to).
     func testOnlyTheTabsThatShowTemperaturesAskForTheSMC() {
         let wanting = SidebarView.Lens.allCases
             .filter { $0.needs.contains(.sensors) }
             .map(\.rawValue)
             .sorted()
-        XCTAssertEqual(wanting, ["fans", "resources", "sensors"])
+        XCTAssertEqual(wanting, ["fans", "hardware", "resources", "sensors"])
     }
 
     /// The process table comes from the per-process sweep, not from SystemMetrics.
@@ -64,11 +64,12 @@ final class LensSamplingNeedsTests: XCTestCase {
         XCTAssertEqual(SidebarView.Lens.processes.needs, [])
     }
 
-    /// Resources is the tab that shows all of it, so it is the tab that asks for
-    /// all of it — and it is the ONLY one, which is what the gate is for.
-    func testResourcesIsTheOnlyTabThatAsksForEverything() {
+    /// Resources is the tab that shows all of it, so it asks for all of it. Hardware puts a reading on every part of the
+    /// Mac and so asks for the same six; no other tab may.
+    func testOnlyResourcesAndHardwareAskForEverything() {
         XCTAssertEqual(SidebarView.Lens.resources.needs, .all)
-        for lens in SidebarView.Lens.allCases where lens != .resources {
+        XCTAssertEqual(SidebarView.Lens.hardware.needs, .all)
+        for lens in SidebarView.Lens.allCases where lens != .resources && lens != .hardware {
             XCTAssertNotEqual(lens.needs, .all, lens.rawValue)
         }
     }

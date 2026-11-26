@@ -1,0 +1,1011 @@
+<meta charset="utf-8">
+<title>Anode Hardware View</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout concept: one open laptop seen from above. The display is the top half, the opened base is the bottom half.
+   Every number lives on the part it describes. Mockup controls sit outside the app window. Dark-first, single palette by choice. */
+:root{
+  --bg:#06070a; --win:#0b0d11; --panel:#10131a; --ink:#e8ecf2; --dim:#8a94a4; --faint:#566070;
+  --line:rgba(255,255,255,.08); --edge:rgba(255,255,255,.10);
+  --accent:#00e5a0; --cool:#4c8dff; --cyan:#4fc8e6; --warm:#ff9a3d; --hot:#ff5a44;
+  --pg:#30d158; --py:#ffd60a; --pr:#ff453a;
+  --sans:'Inter',-apple-system,BlinkMacSystemFont,'Helvetica Neue',sans-serif;
+  --mono:'JetBrains Mono',ui-monospace,'SF Mono',Menlo,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{background:var(--bg);color:var(--ink);font-family:var(--sans);margin:0}
+body{padding-inline:max(16px,env(safe-area-inset-left,0px)) max(16px,env(safe-area-inset-right,0px));padding-block:20px 56px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:18px}
+.mock{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;padding:10px 14px;border:1px dashed rgba(255,255,255,.16);border-radius:10px;font-size:12px;color:var(--dim)}
+.mock b{font-family:var(--mono);font-weight:500;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint)}
+.seg{display:flex;flex-wrap:wrap;gap:4px}
+.seg button,.tog{font:500 12px var(--sans);color:var(--dim);background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:7px;padding:5px 10px;cursor:pointer}
+.seg button:hover,.tog:hover{color:var(--ink);background:rgba(255,255,255,.08)}
+.seg button[aria-pressed=true],.tog[aria-pressed=true]{color:#041a12;background:var(--accent);border-color:var(--accent);font-weight:600}
+button:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.win{width:100%;margin:0 auto;border-radius:14px;background:var(--win);border:1px solid var(--edge);box-shadow:0 30px 80px rgba(0,0,0,.55);overflow:hidden;transition:max-width .25s}
+.win.narrow-preview{max-width:420px}
+.title{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);background:linear-gradient(#12151b,#0d1015)}
+.dots{display:flex;gap:7px}.dots i{width:11px;height:11px;border-radius:50%;background:#3a4049;display:block}
+.dots i:nth-child(1){background:#ff5f57}.dots i:nth-child(2){background:#febc2e}.dots i:nth-child(3){background:#28c840}
+.title h1{font:600 13px var(--sans);margin:0;letter-spacing:.01em;flex:1;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.live{font:500 10.5px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--dim);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.live i{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);display:block}
+.sample{display:none;font:500 10.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:#2b1d00;background:var(--warm);padding:3px 8px;border-radius:6px;white-space:nowrap}
+.win.is-sample .sample{display:block}
+.stage{position:relative;background:radial-gradient(900px 520px at 50% 40%,#10141b 0%,#090b0f 70%)}
+svg#hw{display:block;width:100%;height:auto;margin:0 auto}
+.chips{display:none;gap:6px;overflow-x:auto;padding:8px 12px;border-bottom:1px solid var(--line)}
+.chips button{flex:none;font:500 12px var(--sans);color:var(--dim);background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:999px;padding:6px 12px;cursor:pointer}
+.chips button[aria-pressed=true]{color:var(--ink);border-color:var(--cyan);background:rgba(79,200,230,.12)}
+.win.narrow .chips{display:flex}
+/* svg text */
+svg text{font-family:var(--sans);fill:var(--ink)}
+.mono{font-family:var(--mono)!important}
+.lbl{font:500 10.5px var(--mono);letter-spacing:.14em;text-transform:uppercase;fill:var(--dim)}
+.faint{fill:var(--faint)}.dim{fill:var(--dim)}
+.num{font-variant-numeric:tabular-nums;font-weight:600}
+.halo{paint-order:stroke;stroke:rgba(4,5,7,.9);stroke-width:3.5px;stroke-linejoin:round}
+.comp{cursor:pointer;outline:none}
+.comp .ring{fill:none;stroke:transparent;stroke-width:1.5;rx:14;transition:stroke .15s}
+.comp:hover .ring,.comp:focus-visible .ring,.comp.pinned .ring{stroke:rgba(79,200,230,.65)}
+.comp.pinned .ring{stroke:var(--cyan);stroke-width:2}
+.comp:hover .ring2,.comp:focus-visible .ring2,.comp.pinned .ring2{stroke:rgba(79,200,230,.6)}
+.blades{animation:spin var(--d,3s) linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.pulse{animation:pulse 2.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+@media (prefers-reduced-motion:reduce){.blades,.pulse{animation:none!important}}
+/* tooltip + pinned card */
+.tip,.pin{position:absolute;z-index:5;border-radius:12px;background:rgba(14,17,22,.98);border:1px solid var(--edge);box-shadow:0 18px 50px rgba(0,0,0,.6);font-size:12.5px}
+.tip{pointer-events:none;width:min(300px,calc(100% - 20px));padding:11px 13px;display:none}
+.pin{width:min(340px,calc(100% - 20px));padding:14px 15px;display:none}
+.tip h3,.pin h3{margin:0 0 2px;font:600 13.5px var(--sans)}
+.tip .conf,.pin .conf{font:500 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:8px}
+.rows{display:grid;grid-template-columns:1fr auto;gap:5px 14px;align-items:baseline}
+.rows>span:nth-child(odd){color:var(--dim)}
+.rows>span:nth-child(even){text-align:right;font-variant-numeric:tabular-nums;font-weight:500}
+.tag{display:inline-block;font:500 9px var(--mono);letter-spacing:.08em;padding:1px 5px;border-radius:4px;margin-left:6px;vertical-align:1px}
+.tag.real{color:#06281c;background:var(--accent)}
+.tag.est{color:#2b1d00;background:var(--warm)}
+.tag.ex{color:#101826;background:#9fb0c8}
+.note{margin-top:9px;color:var(--dim);line-height:1.45;font-size:12px}
+.pin .x{position:absolute;top:8px;right:8px;width:24px;height:24px;border-radius:6px;border:0;background:rgba(255,255,255,.06);color:var(--dim);cursor:pointer;font-size:14px}
+.pin svg{display:block;width:100%;height:70px;margin-top:10px}
+.pin .cap{font:500 9.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-top:4px}
+/* notes below the window */
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.notes section{padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.02)}
+.notes h2{margin:0 0 8px;font:600 13px var(--sans)}
+.notes ul{margin:0;padding-left:16px;color:var(--dim);font-size:12.5px;line-height:1.55;display:flex;flex-direction:column;gap:5px}
+.notes b{color:var(--ink);font-weight:600}
+.key{display:flex;flex-wrap:wrap;gap:10px 18px;font-size:12px;color:var(--dim);align-items:center}
+.key svg{vertical-align:-3px}
+h2.sec{font:600 11px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:6px 0 -6px}
+</style>
+
+<div class="wrap">
+  <div class="mock" role="group" aria-label="Mockup controls">
+    <b>Mockup controls · not part of the app</b>
+    <div class="seg" id="layoutSeg" aria-label="Layout"></div>
+    <div class="seg" id="scenSeg" aria-label="Scenario"></div>
+    <div class="seg" aria-label="Options">
+      <button class="tog" id="helperTog" aria-pressed="true">Fan helper installed</button>
+      <button class="tog" id="narrowTog" aria-pressed="false">Narrow window</button>
+    </div>
+  </div>
+
+  <div class="win" id="win">
+    <div class="title">
+      <div class="dots"><i></i><i></i><i></i></div>
+      <h1 id="winTitle">Hardware</h1>
+      <span class="sample">Sample values</span>
+      <span class="live"><i></i><span id="liveTxt">Live · 2 s</span></span>
+    </div>
+    <div class="chips" id="chips" role="tablist" aria-label="Jump to component"></div>
+    <div class="stage" id="stage">
+      <svg id="hw" viewBox="0 0 1100 1205" role="img" aria-label="Interactive illustration of the Mac's internals with live readings on each component"><defs id="sdefs"></defs><defs id="ddefs"></defs><g id="scene"></g></svg>
+      <div class="tip" id="tip" role="tooltip"></div>
+      <div class="pin" id="pin" role="dialog" aria-label="Component detail"></div>
+    </div>
+  </div>
+
+  <h2 class="sec">Reading the mockup</h2>
+  <div class="key" aria-label="Key">
+    <span><span class="tag real">REAL</span> read from this Mac</span>
+    <span><span class="tag est">EST</span> Anode's estimate</span>
+    <span><span class="tag ex">EXAMPLE</span> placeholder, not read</span>
+    <span><svg width="26" height="10"><rect x="1" y="1" width="24" height="8" rx="3" fill="none" stroke="#8a94a4" stroke-dasharray="4 3"/></svg> position approximate (inferred from teardowns)</span>
+  </div>
+  <div class="notes" id="notes"></div>
+</div>
+
+<script>
+/* ---------- tokens & helpers ---------- */
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
+const fmt = (n,d=1) => Number(n).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+const rate = b => b>=1e9 ? fmt(b/1e9,2)+' GB/s' : b>=1e6 ? fmt(b/1e6,1)+' MB/s' : fmt(b/1e3,1)+' KB/s';
+const STOPS = [[30,[58,118,240]],[50,[79,172,236]],[65,[242,178,74]],[80,[255,122,61]],[95,[255,77,58]]];
+function heat(t){
+  t = clamp(t, STOPS[0][0], STOPS[STOPS.length-1][0]);
+  for (let i=1;i<STOPS.length;i++){
+    if (t<=STOPS[i][0]){
+      const [t0,c0]=STOPS[i-1],[t1,c1]=STOPS[i], k=(t-t0)/(t1-t0);
+      return `rgb(${c0.map((v,j)=>Math.round(v+(c1[j]-v)*k)).join(',')})`;
+    }
+  }
+  return 'rgb(255,77,58)';
+}
+const PRESSURE = {1:['Normal','var(--pg)'],2:['Warning','var(--py)'],4:['Critical','var(--pr)']};
+let DEFS = [];
+
+/* ---------- seeded readings ----------
+   THIS_MAC: read from this Mac (MacBook Pro 14", M5 Pro) on 22 Nov 2026 with Anode's own CLI, ioreg, vm_stat, df and history.sqlite.
+   Brightness is not read for this mockup, so it is marked EXAMPLE. */
+const HIST24 = [100,94.4,79.2,73.9,68.3,79.9,80,76.8,null,null,null,null,null,null,null,null,null,null,null,null,null,52,46.8,38,33.6,36.2,68.6,80,80,80,80,80,80,80,80,80,80,80.1,92,99.7,100,100,100,100,100,100,100];
+const wave = (n,base,amp,ph=0) => Array.from({length:n},(_,i)=>base+amp*Math.sin(i*.55+ph)+amp*.5*Math.sin(i*1.7+ph*2));
+const THIS_MAC = {
+  chip:'Apple M5 Pro', ram:24, name:'MacBook Pro 14″',
+  cpuT:41.4, gpuT:41.2, cpuSensors:23, gpuSensors:42,
+  fans:[{rpm:0,min:2317,max:7826},{rpm:0,min:2317,max:7826}],
+  mem:{app:7.6,wired:3.9,comp:10.3,free:2.2,total:24,swap:8.5,pressure:1},
+  net:{down:3.5e3,up:2.7e3,iface:'en0 · Wi-Fi'},
+  ssd:{name:'APPLE SSD AP1024Z',cap:994,free:129,rd:63.1e3,wr:19.7e3,temp:33.9,wear:1,spare:100,written:19.15,read:37.18},
+  bat:{pct:100,temp:30.1,amps:0,state:'Full · holding',sub:'0 mA',time:null,timeEst:false,health:100,cycles:95,design:1000,hist:HIST24,drawW:4.4},
+  adapter:{ratedW:68,inW:4.4,inEst:true,note:'not charging'},
+  disp:{res:'3024 × 1964',name:'Liquid Retina XDR',bright:62,brightEx:true,watts:0.20,measured:true,hist:wave(60,0.2,0.012)},
+  series:{rpm:[[0,0,0,0,0,0,0,0,0,0,0,0]],cpu:wave(40,41.4,.6),gpu:wave(40,41.2,.3,1),mem:wave(40,21.8,.25),down:wave(40,3.5e3,1.2e3).map(Math.abs),up:wave(40,2.7e3,1e3,2).map(Math.abs),rd:wave(40,63e3,30e3).map(Math.abs),wr:wave(40,20e3,12e3,1).map(Math.abs)},
+  pct:{cpu:5,gpu:0,ram:78},
+  real:true
+};
+const LOAD = JSON.parse(JSON.stringify(THIS_MAC));
+Object.assign(LOAD,{
+  cpuT:79.8, gpuT:66.5,
+  fans:[{rpm:4380,min:2317,max:7826},{rpm:4210,min:2317,max:7826}],
+  mem:{app:9.8,wired:4.2,comp:8.1,free:1.9,total:24,swap:11.4,pressure:2},
+  net:{down:38.4e6,up:2.1e6,iface:'en0 · Wi-Fi'},
+  bat:{pct:64,temp:36.8,amps:6.1,state:'Charging',sub:'+6.1 A ≈ +23.6 W',time:'≈ 0:52 to full',timeEst:true,health:100,cycles:95,design:1000,hist:HIST24.slice(0,44).concat([64]),drawW:38.4},
+  adapter:{ratedW:68,inW:62.0,inEst:true,note:'charging'},
+  disp:{res:'3024 × 1964',name:'Liquid Retina XDR',bright:100,brightEx:true,watts:2.6,measured:true,hist:wave(60,2.5,.35)}
+});
+LOAD.ssd = Object.assign({},THIS_MAC.ssd,{rd:1.4e9,wr:.62e9,temp:47.2});
+LOAD.series = {rpm:[wave(40,4300,260)],cpu:wave(40,78,6).map(v=>clamp(v,60,92)),gpu:wave(40,66,5,1),mem:wave(40,22.4,.5),down:wave(40,36e6,9e6).map(Math.abs),up:wave(40,2e6,.6e6,2).map(Math.abs),rd:wave(40,1.3e9,.4e9).map(Math.abs),wr:wave(40,.6e9,.2e9,1).map(Math.abs)};
+LOAD.pct = {cpu:78,gpu:62,ram:84}; LOAD.real = false; LOAD.label='Under load (illustrative)';
+
+/* ---------- teardown-photo registration: photo pixels (as shown at 2296 px wide) -> drawing units ---------- */
+const PHOTO_URI = 'data:image/jpeg;base64,__PHOTO_B64__';
+/* The photo was straightened: its chassis edges were fitted with lines and the picture warped to a true rectangle.
+   Every position below is still written in the ORIGINAL photo's pixels (as shown 2296 wide); WP maps them onto the straightened picture. */
+const WARP = {H:[0.519715583, 0.007629929, -27.727457298, 0.008782331, 0.515148464, -33.48119868, 8.203e-06, 4.491e-06, 1.0], K:3415/2296, OW:1700, OH:1165, S:1700/3362, RA:1668.0, RB:0.0244, RR:1696.402};
+const PH = {x:40, y:468, s:1020/1700, h:1165*(1020/1700)};
+const WP = (px,py) => { const X=px*WARP.K, Y=py*WARP.K, h=WARP.H, d=h[6]*X+h[7]*Y+h[8]; const u=(h[0]*X+h[1]*Y+h[2])/d, v=(h[3]*X+h[4]*Y+h[5])/d; return [u*WARP.RR/(WARP.RA+WARP.RB*v), v]; };
+const P  = (px,py) => { const [u,v]=WP(px,py); return [PH.x+u*PH.s, PH.y+v*PH.s]; };
+const PS = v => v*WARP.K*WARP.S*PH.s;
+const warpPath = d => { const t = d.match(/[MLC]|-?\d+\.?\d*/g); const out=[]; let nums=[]; const flush=()=>{ for (let i=0;i<nums.length;i+=2){ const [u,v]=WP(nums[i],nums[i+1]); out.push(u.toFixed(1),v.toFixed(1)); } nums=[]; }; t.forEach(x=>{ if (/[MLC]/.test(x)){ flush(); out.push(x); } else nums.push(+x); }); flush(); return out.join(' '); };
+const FR = (px,py,pw,ph) => { const [x,y]=P(px,py); return [x,y,PS(pw),PS(ph)].map(Math.round); };
+const plate = (x,y,w,h,r=10,op=.78,stroke='rgba(255,255,255,.14)',dash='') => `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" fill="rgba(7,9,12,${op})" stroke="${stroke}" ${dash}/>`;
+
+/* ---------- layouts (topology data; the real build keeps this in PowerKit, keyed by model + chip tier) ---------- */
+const CELL = (x,y,w,h,roles) => ({x,y,w,h,roles});
+const PCELL = (px,py,pw,ph,roles) => { const [x,y]=P(px,py); return CELL(x,y,PS(pw),PS(ph),roles); };
+const LAYOUTS = {
+  mbpPhoto: {
+    label:'MacBook Pro · teardown photo', title:'MacBook Pro 14″ · M5 Pro · 24 GB', kind:'laptopPhoto', real:true, photo:true,
+    chip:'Apple M5 Pro', fanCount:2, vb:[0,0,1100,1205],
+    comps:[
+      {id:'display',kind:'display',x:58,y:26,w:984,h:398,conf:'verified',focus:[40,10,1020,430],chip:'Display'},
+      {id:'photo',kind:'photo'},
+      {id:'antenna',kind:'antenna',x:152,y:507,w:796,h:15,conf:'inferred'},
+      {id:'fan0',kind:'pfan',dk:'fan',idx:0,px:434,py:488,conf:'verified',focus:FR(230,260,490,640),chip:'Fan 1'},
+      {id:'fan1',kind:'pfan',dk:'fan',idx:1,px:1845,py:481,conf:'verified',focus:FR(1560,260,500,640),chip:'Fan 2'},
+      {id:'pipe',kind:'ppipe',dk:'pipe',path:'M 340 222 L 730 222 C 772 222, 786 238, 782 282 C 778 330, 810 384, 930 394 L 1320 394 C 1420 386, 1494 322, 1528 252 C 1538 224, 1556 214, 1600 214 L 1990 214',split:1160,x0:340,x1:1990,wpath:'M 221.1 146.4 L 227.0 146.4 L 232.8 146.4 L 238.6 146.4 L 244.4 146.4 L 250.3 146.4 L 256.1 146.4 L 261.9 146.4 L 267.8 146.4 L 273.6 146.4 L 279.4 146.4 L 285.3 146.4 L 291.1 146.4 L 296.9 146.4 L 302.7 146.4 L 308.6 146.4 L 314.4 146.4 L 320.2 146.4 L 326.1 146.4 L 331.9 146.4 L 337.7 146.4 L 343.5 146.4 L 349.4 146.4 L 355.2 146.4 L 361.0 146.4 L 366.9 146.4 L 372.7 146.4 L 378.5 146.4 L 384.4 146.4 L 390.2 146.4 L 396.0 146.4 L 401.8 146.4 L 407.7 146.4 L 413.5 146.4 L 419.3 146.4 L 425.2 146.4 L 431.0 146.4 L 436.8 146.4 L 442.7 146.4 L 448.5 146.4 L 454.3 146.4 L 460.1 146.4 L 466.0 146.4 L 471.8 146.4 L 477.6 146.4 L 483.5 146.4 L 489.3 146.4 L 495.1 146.4 L 500.9 146.4 L 506.8 146.4 L 512.6 146.4 L 518.4 146.4 L 524.3 146.6 L 530.1 146.9 L 535.9 147.7 L 541.6 148.9 L 547.1 150.7 L 552.2 153.4 L 556.8 157.0 L 560.5 161.5 L 563.2 166.7 L 565.2 172.1 L 566.8 177.6 L 568.3 183.1 L 569.7 188.5 L 571.1 193.9 L 572.7 199.2 L 574.7 204.4 L 577.0 209.6 L 579.6 214.6 L 582.5 219.6 L 585.8 224.3 L 589.4 228.9 L 593.2 233.2 L 597.3 237.3 L 601.6 241.2 L 606.1 244.9 L 610.8 248.4 L 615.7 251.6 L 620.7 254.7 L 625.8 257.5 L 631.0 260.1 L 636.2 262.5 L 641.6 264.8 L 647.1 266.8 L 652.6 268.7 L 658.1 270.4 L 663.7 272.0 L 669.4 273.4 L 675.1 274.7 L 680.8 275.8 L 686.5 276.7 L 692.3 277.5 L 698.1 278.0 L 703.9 278.4 L 709.7 278.6 L 715.6 278.6 L 721.4 278.6 L 727.2 278.6 L 733.0 278.6 L 738.9 278.6 L 744.7 278.6 L 750.5 278.6 L 756.4 278.6 L 762.2 278.6 L 768.0 278.6 L 773.9 278.6 L 779.7 278.6 L 785.5 278.6 L 791.3 278.6 L 797.2 278.6 L 803.0 278.6 L 808.8 278.6 L 814.7 278.6 L 820.5 278.6 L 826.3 278.6 L 832.2 278.6 L 838.0 278.6 L 843.8 278.6 L 849.6 278.6 L 855.5 278.6 L 861.3 278.6 L 867.1 278.6 L 873.0 278.6 L 878.8 278.6 L 884.6 278.6 L 890.5 278.6 L 896.3 278.6 L 902.1 278.6 L 907.9 278.6 L 913.8 278.6 L 919.6 278.6 L 925.4 278.6 L 931.3 278.6 L 937.1 278.6 L 942.9 278.6 L 948.7 278.6 L 954.6 278.6 L 960.4 278.6 L 966.2 278.6 L 972.1 278.6 L 977.9 278.6 L 983.7 278.6 L 989.6 278.6 L 995.4 278.4 L 1001.2 278.0 L 1007.0 277.5 L 1012.8 276.7 L 1018.5 275.8 L 1024.2 274.7 L 1029.9 273.4 L 1035.6 272.0 L 1041.2 270.4 L 1046.7 268.7 L 1052.2 266.8 L 1057.7 264.8 L 1063.0 262.5 L 1068.3 260.1 L 1073.5 257.5 L 1078.6 254.7 L 1083.6 251.6 L 1088.5 248.4 L 1093.1 244.9 L 1097.7 241.2 L 1102.0 237.3 L 1106.1 233.2 L 1109.9 228.9 L 1113.5 224.3 L 1116.7 219.6 L 1119.7 214.6 L 1122.3 209.6 L 1124.6 204.4 L 1126.6 199.2 L 1128.2 193.9 L 1129.6 188.5 L 1131.0 183.1 L 1132.5 177.6 L 1134.1 172.1 L 1136.1 166.7 L 1138.8 161.5 L 1142.5 157.0 L 1147.0 153.4 L 1152.2 150.7 L 1157.7 148.9 L 1163.4 147.7 L 1169.2 146.9 L 1175.0 146.6 L 1180.9 146.4 L 1186.7 146.4 L 1192.5 146.4 L 1198.3 146.4 L 1204.2 146.4 L 1210.0 146.4 L 1215.8 146.4 L 1221.7 146.4 L 1227.5 146.4 L 1233.3 146.4 L 1239.1 146.4 L 1245.0 146.4 L 1250.8 146.4 L 1256.6 146.4 L 1262.5 146.4 L 1268.3 146.4 L 1274.1 146.4 L 1280.0 146.4 L 1285.8 146.4 L 1291.6 146.4 L 1297.4 146.4 L 1303.3 146.4 L 1309.1 146.4 L 1314.9 146.4 L 1320.8 146.4 L 1326.6 146.4 L 1332.4 146.4 L 1338.2 146.4 L 1344.1 146.4 L 1349.9 146.4 L 1355.7 146.4 L 1361.6 146.4 L 1367.4 146.4 L 1373.2 146.4 L 1379.1 146.4 L 1384.9 146.4 L 1390.7 146.4 L 1396.5 146.4 L 1402.4 146.4 L 1408.2 146.4 L 1414.0 146.4 L 1419.9 146.4 L 1425.7 146.4 L 1431.5 146.4 L 1437.3 146.4 L 1443.2 146.4 L 1449.0 146.4 L 1454.8 146.4 L 1460.7 146.4 L 1466.5 146.4 L 1472.3 146.4 L 1478.2 146.4',wu0:221.1,wu1:1478.2,cpuW:[750.9,278.9],gpuW:[948.4,278.9],cpuAt:[1030,394],gpuAt:[1290,394],cpuSide:'left',conf:'verified',dieSide:'inferred',focus:FR(680,150,920,320),chip:'CPU · GPU'},
+      {id:'mem',kind:'pmem',dk:'memory',conf:'inferred',focus:[345,615,450,200],chip:'Memory'},
+      {id:'ssd',kind:'pssd',dk:'ssd',conf:'inferred',focus:[415,780,370,110],chip:'Storage'},
+      {id:'wifi',kind:'pwifi',dk:'wifi',conf:'inferred',focus:FR(1880,400,400,230),chip:'Wi-Fi'},
+      {id:'power-in',kind:'padapter',dk:'adapter',conf:'verified',focus:FR(40,70,560,320),chip:'Power in'},
+      {id:'battery',kind:'battery',plated:true,conf:'verified',focus:FR(100,860,2100,680),chip:'Battery',cells:[
+        PCELL(205,885,395,315,['charge']),PCELL(130,1215,470,295,['temp']),
+        PCELL(690,955,430,425,['state']),PCELL(1160,955,430,425,['graph']),
+        PCELL(1685,885,405,315,['draw']),PCELL(1690,1215,480,295,['health'])]}
+    ]
+  },
+  mbpPro: {
+    label:'MacBook Pro · illustration', title:'MacBook Pro 14″ · M5 Pro · 24 GB', kind:'laptop', real:true,
+    chip:'Apple M5 Pro', fanCount:2, vb:[0,0,1100,1130],
+    comps:[
+      {id:'display',kind:'display',x:58,y:26,w:984,h:398,conf:'verified',focus:[40,10,1020,430],chip:'Display'},
+      {id:'antenna',kind:'antenna',x:130,y:474,w:840,h:18,conf:'inferred'},
+      {id:'board',kind:'board',x:300,y:498,w:500,h:374,conf:'verified'},
+      {id:'fan0',kind:'fan',idx:0,cx:200,cy:652,r:78,conf:'verified',focus:[100,540,200,290],chip:'Fan 1'},
+      {id:'fan1',kind:'fan',idx:1,cx:900,cy:652,r:78,conf:'verified',focus:[800,540,200,290],chip:'Fan 2'},
+      {id:'soc',kind:'soc',x:330,y:572,w:440,h:160,die:[475,600,150,104],conf:'verified'},
+      {id:'mem',kind:'memory',dies:[[344,584,112,136],[644,584,112,136]],bar:[352,702,396,14],pkg:[330,572,440,160],conf:'verified',focus:[320,560,460,190],chip:'Memory'},
+      {id:'pipe',kind:'pipe',x0:282,x1:818,y:652,h:30,split:550,cpuSide:'left',conf:'verified',dieSide:'inferred',focus:[270,560,560,200],chip:'CPU · GPU'},
+      {id:'wifi',kind:'wifi',x:590,y:502,w:170,h:64,conf:'inferred',focus:[470,470,500,110],chip:'Wi-Fi'},
+      {id:'ssd',kind:'ssd',chips:[[418,760,84,46],[666,760,90,46]],tx:[418,826,338],box:[406,750,362,124],conf:'verified',focus:[370,740,360,140],chip:'Storage'},
+      {id:'power-in',kind:'adapter',x:64,y:498,w:190,h:44,port:[40,508,22,24],usbc:[[40,590,22,16],[40,624,22,16]],conf:'verified',focus:[40,480,240,80],chip:'Power in'},
+      {id:'spkL',kind:'speaker',x:62,y:882,w:38,h:210,conf:'verified'},
+      {id:'spkR',kind:'speaker',x:1000,y:882,w:38,h:210,conf:'verified'},
+      {id:'trackpad',kind:'trackpad',x:392,y:872,w:316,h:232,conf:'verified'},
+      {id:'battery',kind:'battery',conf:'verified',focus:[100,870,900,236],chip:'Battery',cells:[
+        CELL(110,882,280,100,['charge']),CELL(110,992,280,100,['temp']),
+        CELL(410,882,280,100,['state']),CELL(410,992,280,100,['graph']),
+        CELL(710,882,280,100,['draw']),CELL(710,992,280,100,['health'])]}
+    ]
+  },
+  mbpBase: {
+    label:'MacBook Pro 14″ · base chip', title:'MacBook Pro 14″ · base chip · one fan', kind:'laptop', real:false,
+    chip:'Apple M4', fanCount:1, vb:[0,0,1100,1130],
+    comps:[
+      {id:'display',kind:'display',x:58,y:26,w:984,h:398,conf:'verified',focus:[40,10,1020,430],chip:'Display'},
+      {id:'antenna',kind:'antenna',x:130,y:474,w:840,h:18,conf:'inferred'},
+      {id:'board',kind:'board',x:300,y:498,w:500,h:374,conf:'verified'},
+      {id:'fan0',kind:'fan',idx:0,cx:900,cy:652,r:78,conf:'inferred',focus:[800,540,200,290],chip:'Fan'},
+      {id:'soc',kind:'soc',x:330,y:572,w:440,h:160,die:[475,600,150,104],conf:'verified'},
+      {id:'mem',kind:'memory',dies:[[344,584,112,136],[644,584,112,136]],bar:[352,702,396,14],pkg:[330,572,440,160],conf:'verified',focus:[320,560,460,190],chip:'Memory'},
+      {id:'pipe',kind:'pipe',x0:430,x1:818,y:652,h:30,split:560,cpuSide:'left',conf:'verified',dieSide:'inferred',short:true,focus:[420,560,420,200],chip:'CPU · GPU'},
+      {id:'wifi',kind:'wifi',x:590,y:502,w:170,h:64,conf:'inferred',focus:[470,470,500,110],chip:'Wi-Fi'},
+      {id:'ssd',kind:'ssd',chips:[[418,760,84,46],[666,760,90,46]],tx:[418,826,338],box:[406,750,362,124],conf:'verified',focus:[370,740,360,140],chip:'Storage'},
+      {id:'power-in',kind:'adapter',x:64,y:498,w:190,h:44,port:[40,508,22,24],usbc:[[40,590,22,16],[40,624,22,16]],conf:'verified',focus:[40,480,240,80],chip:'Power in'},
+      {id:'spkL',kind:'speaker',x:62,y:882,w:38,h:210,conf:'verified'},
+      {id:'spkR',kind:'speaker',x:1000,y:882,w:38,h:210,conf:'verified'},
+      {id:'trackpad',kind:'trackpad',x:392,y:872,w:316,h:232,conf:'verified'},
+      {id:'battery',kind:'battery',conf:'verified',focus:[100,870,900,236],chip:'Battery',cells:[
+        CELL(110,882,280,100,['charge']),CELL(110,992,280,100,['temp']),
+        CELL(410,882,280,100,['state']),CELL(410,992,280,100,['graph']),
+        CELL(710,882,280,100,['draw']),CELL(710,992,280,100,['health'])]}
+    ]
+  },
+  neo: {
+    label:'Mac Neo', title:'MacBook Neo · A18 Pro · 8 GB · fanless', kind:'laptop', real:false,
+    chip:'Apple A18 Pro', fanCount:0, vb:[0,0,1100,1130],
+    comps:[
+      {id:'display',kind:'display',x:58,y:26,w:984,h:398,conf:'verified',focus:[40,10,1020,430],chip:'Display',res:'2408 × 1506',dname:'Liquid Retina'},
+      {id:'antenna',kind:'antenna',x:130,y:474,w:840,h:18,conf:'inferred'},
+      {id:'board',kind:'board',x:350,y:498,w:400,h:300,conf:'verified'},
+      {id:'soc',kind:'soc',x:420,y:534,w:260,h:150,die:[470,556,160,106],conf:'verified'},
+      {id:'mem',kind:'memory',compact:true,stack:true,dies:[[430,544,240,38]],bar:[440,660,220,12],pkg:[420,534,260,150],conf:'verified',focus:[410,520,290,180],chip:'Memory'},
+      {id:'pipe',kind:'pipe',spreader:true,x0:380,x1:720,y:610,h:34,split:550,cpuSide:'left',conf:'verified',dieSide:'inferred',focus:[370,520,360,170],chip:'CPU · GPU'},
+      {id:'wifi',kind:'wifi',x:700,y:510,w:110,h:70,small:true,conf:'inferred',focus:[600,470,260,120],chip:'Wi-Fi'},
+      {id:'ssd',kind:'ssd',chips:[[400,716,110,50]],tx:[524,722,226],box:[390,706,370,70],conf:'verified',focus:[380,700,390,90],chip:'Storage'},
+      {id:'power-in',kind:'adapter',x:64,y:560,w:200,h:44,port:null,usbc:[[40,574,22,16],[40,616,22,16]],usbcPower:true,conf:'verified',focus:[40,540,260,100],chip:'Power in',adapterW:30},
+      {id:'spkL',kind:'speaker',x:62,y:840,w:38,h:252,conf:'verified'},
+      {id:'spkR',kind:'speaker',x:1000,y:840,w:38,h:252,conf:'verified'},
+      {id:'trackpad',kind:'trackpad',x:392,y:880,w:316,h:224,conf:'verified'},
+      {id:'battery',kind:'battery',conf:'verified',focus:[100,830,900,270],chip:'Battery',cells:[
+        CELL(110,840,430,252,['charge','temp','state']),
+        CELL(560,840,430,252,['graph','draw','health'])]},
+      {id:'note',kind:'note',x:84,y:700,text:['Fanless.','Cooled passively','through the case.']}
+    ]
+  },
+  mini: {
+    label:'Mac mini M4', title:'Mac mini · M4 · 16 GB', kind:'desktop', real:false,
+    chip:'Apple M4', fanCount:1, vb:[130,0,840,800],
+    comps:[
+      {id:'psu',kind:'psu',x:220,y:60,w:660,h:100,conf:'verified',focus:[200,40,700,140],chip:'Power'},
+      {id:'fan0',kind:'fan',idx:0,cx:370,cy:350,r:78,conf:'verified',focus:[270,240,200,310],chip:'Fan'},
+      {id:'soc',kind:'soc',x:520,y:270,w:300,h:180,die:[600,300,140,100],conf:'verified'},
+      {id:'mem',kind:'memory',compact:true,dies:[[528,278,56,164],[756,278,56,164]],bar:[536,420,264,12],pkg:[520,270,300,180],conf:'verified',focus:[510,240,320,230],chip:'Memory'},
+      {id:'pipe',kind:'pipe',x0:450,x1:790,y:350,h:28,split:625,cpuSide:'left',conf:'verified',dieSide:'inferred',focus:[440,250,360,200],chip:'CPU · GPU'},
+      {id:'ssd',kind:'ssd',chips:[[240,590,100,56]],tx:[240,656,230],box:[230,580,250,110],conf:'inferred',focus:[220,570,270,130],chip:'Storage'},
+      {id:'wifi',kind:'wifi',x:620,y:590,w:170,h:64,conf:'inferred',focus:[600,570,210,110],chip:'Wi-Fi'},
+      {id:'antenna',kind:'antenna',x:215,y:722,w:670,h:22,conf:'inferred',label:'BOTTOM PLATE · ANTENNA (approx.)'}
+    ]
+  },
+  generic: {
+    label:'Unknown Mac (fallback)', title:'Mac · layout not known', kind:'generic', real:false,
+    chip:'Apple silicon', fanCount:2, vb:[0,0,1100,1130],
+    comps:[
+      {id:'gboard',kind:'gframe',x:60,y:40,w:980,h:1050},
+      {id:'fan0',kind:'fan',idx:0,cx:230,cy:210,r:78,conf:'inferred',focus:[130,100,200,300],chip:'Fan 1'},
+      {id:'fan1',kind:'fan',idx:1,cx:870,cy:210,r:78,conf:'inferred',focus:[770,100,200,300],chip:'Fan 2'},
+      {id:'soc',kind:'soc',x:330,y:140,w:440,h:160,die:[475,168,150,104],conf:'inferred'},
+      {id:'mem',kind:'memory',dies:[[344,152,112,136],[644,152,112,136]],bar:[352,264,396,14],pkg:[330,140,440,160],conf:'inferred',focus:[320,130,460,190],chip:'Memory'},
+      {id:'pipe',kind:'pipe',x0:310,x1:790,y:220,h:30,split:550,cpuSide:'left',conf:'inferred',dieSide:'inferred',focus:[300,130,500,180],chip:'CPU · GPU'},
+      {id:'wifi',kind:'wifi',x:340,y:370,w:170,h:64,conf:'inferred',focus:[320,350,220,100],chip:'Wi-Fi'},
+      {id:'ssd',kind:'ssd',chips:[[600,372,90,46]],tx:[560,438,316],box:[560,360,340,110],conf:'inferred',focus:[550,350,360,130],chip:'Storage'},
+      {id:'battery',kind:'battery',conf:'inferred',focus:[80,520,940,560],chip:'Battery',cells:[
+        CELL(110,540,880,250,['charge','temp','state']),CELL(110,810,880,260,['graph','draw','health'])]},
+      {id:'gnote',kind:'note',x:110,y:490,text:['Generic schematic. Anode does not know this model’s internal layout yet,']},
+    ]
+  }
+};
+
+/* ---------- state ---------- */
+const S = { layout:'mbpPhoto', scen:'now', helper:true, forceNarrow:false, narrow:false, focusId:null,
+            manual:{}, pinned:null, hover:null };
+const SCEN = {now:THIS_MAC, load:LOAD};
+function T(){
+  const L = LAYOUTS[S.layout];
+  const base = (S.scen==='load') ? LOAD : THIS_MAC;
+  // non-lead layouts always show sample values; the real flag only holds for this Mac's own layout in 'now'
+  const t = JSON.parse(JSON.stringify(base));
+  t.chip = L.chip;
+  if (S.layout==='neo'){ t.ram=8; t.mem.total=8; t.mem.app=2.6; t.mem.wired=1.4; t.mem.comp=2.1; t.mem.free=1.9; t.mem.swap=0.4; t.ssd.cap=256; t.ssd.free=181; t.ssd.name='SanDisk NAND'; t.fans=[]; t.cpuT=(S.scen==='load'?71:36.2); t.gpuT=(S.scen==='load'?58:35.1); t.adapter.ratedW=30; t.adapter.inW=(S.scen==='load'?29.4:3.1); t.bat.drawW=(S.scen==='load'?9.8:3.1); t.disp.res='2408 × 1506'; t.disp.name='Liquid Retina'; t.disp.watts=(S.scen==='load'?1.4:0.3); t.disp.measured=false; }
+  if (S.layout==='mbpBase'){ t.ram=16; t.mem.total=16; t.mem.app=5.1; t.mem.wired=2.6; t.mem.comp=3.2; t.mem.free=5.1; t.mem.swap=0.6; t.ssd.cap=500; t.ssd.free=311; t.fans=[{rpm:S.scen==='load'?5200:0,min:2200,max:7600}]; t.cpuT=(S.scen==='load'?84:39.5); t.gpuT=(S.scen==='load'?61:38.1); t.disp.measured=false; }
+  if (S.layout==='mini'){ t.ram=16; t.mem.total=16; t.mem.app=4.4; t.mem.wired=2.2; t.mem.comp=1.6; t.mem.free=7.8; t.mem.swap=0; t.ssd.cap=500; t.ssd.free=402; t.fans=[{rpm:S.scen==='load'?3900:1050,min:1000,max:4900}]; t.cpuT=(S.scen==='load'?72:38.8); t.gpuT=(S.scen==='load'?62:37.4); t.bat=null; t.disp=null; t.adapter={wall:true,inW:S.scen==='load'?34.2:5.8}; }
+  if (S.layout==='generic'){ t.fans=[{rpm:S.scen==='load'?4100:0,min:2300,max:7800},{rpm:S.scen==='load'?4000:0,min:2300,max:7800}]; t.disp=null; }
+  t.sample = !((S.layout==='mbpPro' || S.layout==='mbpPhoto') && S.scen==='now');
+  // manual fan targets override the displayed rpm (mockup of the slider)
+  t.fans.forEach((f,i)=>{ if (S.manual[i]!=null){ f.rpm=S.manual[i]; f.manual=true; } });
+  return t;
+}
+
+/* ---------- drawing primitives ---------- */
+const lbl = (x,y,t,extra='') => `<text class="lbl" x="${x}" y="${y}" ${extra}>${esc(t)}</text>`;
+const txt = (x,y,t,size,cls='',extra='') => `<text x="${x}" y="${y}" ${size?`font-size="${size}"`:''} class="${cls}" ${extra}>${t}</text>`;
+function spark(x,y,w,h,vals,color,opt={}){
+  const v = vals.filter(a=>a!=null);
+  if (!v.length) return '';
+  const lo = opt.min!=null?opt.min:Math.min(...v), hi = opt.max!=null?opt.max:Math.max(...v);
+  const rng = (hi-lo)||1, n = vals.length;
+  const X = i => x + (i/(n-1))*w, Y = a => y + h - ((a-lo)/rng)*h;
+  let segs=[], cur=[];
+  vals.forEach((a,i)=>{ if (a==null){ if(cur.length) segs.push(cur); cur=[]; } else cur.push([X(i),Y(a)]); });
+  if (cur.length) segs.push(cur);
+  let out = '';
+  if (opt.grid) out += [0,.5,1].map(k=>`<line x1="${x}" x2="${x+w}" y1="${y+h*k}" y2="${y+h*k}" stroke="rgba(255,255,255,.07)"/>`).join('');
+  segs.forEach(s=>{
+    if (s.length>1){
+      const d = 'M'+s.map(p=>p[0].toFixed(1)+' '+p[1].toFixed(1)).join(' L');
+      if (opt.area!==false) out += `<path d="${d} L${s[s.length-1][0].toFixed(1)} ${y+h} L${s[0][0].toFixed(1)} ${y+h} Z" fill="${color}" opacity=".16"/>`;
+      out += `<path d="${d}" fill="none" stroke="${color}" stroke-width="${opt.sw||1.6}" stroke-linejoin="round" stroke-linecap="round"/>`;
+    }
+  });
+  const last = segs[segs.length-1]; const lp = last && last[last.length-1];
+  if (lp) out += `<circle cx="${lp[0]}" cy="${lp[1]}" r="3" fill="${color}"/><circle cx="${lp[0]}" cy="${lp[1]}" r="6" fill="${color}" opacity=".25"/>`;
+  return out;
+}
+const hit = (id,x,y,w,h) => `<rect class="ring" x="${x}" y="${y}" width="${w}" height="${h}" rx="14"/><rect x="${x}" y="${y}" width="${w}" height="${h}" fill="transparent"/>`;
+const grp = (c,inner,box,extra='') => `<g class="comp${S.pinned===c.id?' pinned':''}" data-c="${c.id}" tabindex="0" ${extra}>${hit(c.id,...box)}${inner}</g>`;
+const dashed = c => c.conf==='inferred' ? 'stroke-dasharray="5 4"' : '';
+
+/* ---------- component drawers ---------- */
+const DRAW = {};
+
+/* The display is a macOS desktop: wallpaper, menu bar with the Anode widgets beside the notch,
+   and Anode's display readout as a glass desktop widget. Brightness really dims the picture. */
+const APPLE_LOGO = 'M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701';
+function menuWidget(cx,top,label,value){
+  return `<text x="${cx}" y="${top+10}" text-anchor="middle" font-size="7" font-weight="500" style="fill:rgba(255,255,255,.72);letter-spacing:.02em">${esc(label)}</text>
+          <text x="${cx}" y="${top+20.5}" text-anchor="middle" font-size="10.5" font-weight="600" class="num" style="fill:#fff">${esc(value)}</text>`;
+}
+DRAW.display = (c,t) => {
+  const {x,y,w,h} = c; const d = t.disp; if (!d) return '';
+  const dim = ((1-d.bright/100)*.5).toFixed(3), mb = y;
+  const b = t.bat, pc = t.pct || {cpu:5,gpu:0,ram:78};
+  let o = `<g clip-path="url(#scrClip)"><use href="#wallpaper"/>
+    <rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#000" opacity="${dim}"/>
+    <rect x="${x}" y="${mb}" width="${w}" height="24" fill="rgba(12,14,22,.42)"/></g>
+  <path d="M470 26 h160 v10 a14 14 0 0 1 -14 14 h-132 a14 14 0 0 1 -14 -14 z" fill="#020304"/>
+  <circle cx="550" cy="38" r="3.4" fill="#12171d" stroke="rgba(255,255,255,.12)"/>`;
+  // left of the notch: Apple menu, Anode as the active app, its menus
+  o += `<g transform="translate(${x+14},${mb+5.5}) scale(.55)"><path d="${APPLE_LOGO}" fill="#fff"/></g>`;
+  o += `<text x="${x+36}" y="${mb+16}" font-size="10.5" font-weight="700" style="fill:#fff">Anode</text>`;
+  [['File',84],['Edit',112],['View',140],['Window',172],['Help',216]].forEach(([n,dx])=>{ o += `<text x="${x+dx}" y="${mb+16}" font-size="10.5" font-weight="500" style="fill:rgba(255,255,255,.9)">${n}</text>`; });
+  // right of the notch: Anode's own menu bar widgets (the owner's real set), then system items
+  const swap = fmt(t.mem.swap)+' GB';
+  const nowV = b && b.state==='Charging' ? '+38%/hr' : 'Full';
+  const used = b ? `${Math.round(b.drawW)}/${t.adapter.ratedW}W` : '—';
+  const W = [['Now',nowV],['Used/Charger',used],['CPU',pc.cpu+'%'],['RAM',pc.ram+'%'],['GPU',pc.gpu+'%'],['Swap',swap]].map(([l,v])=>[l,v,Math.max(24,Math.max(l.length*4.0,v.length*5.9)+5)]);
+  let wx = 642;
+  W.forEach(([l,v,ww])=>{ o += menuWidget(wx+ww/2,mb,l,v); wx += ww+3; });
+  // Anode's glyph: three ascending bars on a plinth
+  const gx = wx+4;
+  o += `<g fill="#fff"><rect x="${gx}" y="${mb+14}" width="2.6" height="5"/><rect x="${gx+4}" y="${mb+11}" width="2.6" height="8"/><rect x="${gx+8}" y="${mb+7.5}" width="2.6" height="11.5"/><rect x="${gx-1}" y="${mb+19.5}" width="13.5" height="1.6" rx=".6"/></g>`;
+  // system items, right-aligned
+  o += `<text x="${x+w-14}" y="${mb+16}" text-anchor="end" font-size="10.5" font-weight="500" style="fill:#fff">Sun 2:41 PM</text>`;
+  if (b){
+    const bx = x+w-108, fillW = 16*b.pct/100;
+    o += `<g><rect x="${bx}" y="${mb+8.5}" width="18" height="8.5" rx="2.4" fill="none" stroke="rgba(255,255,255,.85)" stroke-width="1"/><rect x="${bx+1.5}" y="${mb+10}" width="${fillW}" height="5.5" rx="1.2" fill="#fff"/><rect x="${bx+18.8}" y="${mb+11}" width="1.6" height="3.5" rx=".7" fill="rgba(255,255,255,.85)"/></g>`;
+  }
+  const wx2 = x+w-138;
+  o += `<g fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round"><path d="M${wx2} ${mb+10.5} a7 7 0 0 1 11 0"/><path d="M${wx2+2.2} ${mb+13.2} a3.7 3.7 0 0 1 6.6 0"/></g><circle cx="${wx2+5.5}" cy="${mb+16}" r="1.1" fill="#fff"/>`;
+
+  // Anode's display readout as a glass desktop widget
+  const hx = x+w-436, hy = y+h-206, hw = 424, hh = 194;
+  o += plate(hx,hy,hw,hh,16,.62,'rgba(255,255,255,.2)');
+  o += lbl(hx+20,hy+26,'DISPLAY');
+  o += txt(hx+20,hy+74,`<tspan class="num" font-size="42">${fmt(d.watts,2)}</tspan><tspan class="dim" font-size="17" dx="4">W</tspan>`,0);
+  o += txt(hx+20,hy+94,d.measured?'measured':'≈ estimated',12,'dim');
+  const sx = hx+20, sy = hy+138, sw = 150, bv = d.bright/100;
+  o += lbl(sx,sy-14,'BRIGHTNESS');
+  o += `<line x1="${sx}" x2="${sx+sw}" y1="${sy}" y2="${sy}" stroke="rgba(255,255,255,.2)" stroke-width="5" stroke-linecap="round"/>
+        <line x1="${sx}" x2="${sx+sw*bv}" y1="${sy}" y2="${sy}" stroke="#f1f4f8" stroke-width="5" stroke-linecap="round"/>
+        <circle cx="${sx+sw*bv}" cy="${sy}" r="8" fill="#f4f7fb" stroke="rgba(0,0,0,.4)"/>`;
+  o += txt(sx+sw+16,sy+5,`${d.bright} %`,14,'num');
+  if (d.brightEx) o += `<rect x="${sx}" y="${sy+16}" width="58" height="15" rx="4" fill="#9fb0c8"/><text x="${sx+29}" y="${sy+27}" text-anchor="middle" font-size="8.5" class="mono" style="fill:#101826;font-weight:600;letter-spacing:.08em">EXAMPLE</text>`;
+  const gx2 = hx+230, gy = hy+40, gw = 176, gh = 112, mx = Math.max(...d.hist)*1.25;
+  o += lbl(gx2,hy+26,'POWER · SINCE OPENED');
+  o += spark(gx2,gy,gw,gh,d.hist,'#4fc8e6',{grid:true,min:0,max:mx,sw:1.8});
+  o += txt(gx2+gw,gy+gh+16,fmt(mx,2)+' W max',10,'mono faint','text-anchor="end"');
+  return grp(c,o,[x,y,w,h]);
+};
+
+DRAW.antenna = (c,t) => {
+  const {x,y,w,h} = c;
+  let o = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="9" fill="rgba(79,200,230,.04)" stroke="rgba(79,200,230,.35)" stroke-dasharray="6 5"/>`;
+  const lab = c.label||'ANTENNAS · APPROX. POSITION';
+  o += `<rect x="${x+w/2-lab.length*3.1-10}" y="${y-1}" width="${lab.length*6.2+20}" height="${h+2}" rx="6" fill="rgba(7,9,12,.86)" stroke="rgba(79,200,230,.4)"/><text class="lbl" x="${x+w/2}" y="${y+h/2+3.5}" text-anchor="middle" style="font-size:8.5px;fill:#8fcfde">${esc(lab)}</text>`;
+  return `<g data-c="${c.id}">${o}</g>`;
+};
+
+DRAW.board = c => {
+  DEFS.push(`<pattern id="pcb" width="14" height="14" patternUnits="userSpaceOnUse"><path d="M0 7 H14 M7 0 V14" stroke="rgba(120,160,190,.05)" stroke-width="1"/></pattern>`);
+  return `<g><rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" rx="22" fill="#0e1218" stroke="#1e2733"/><rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" rx="22" fill="url(#pcb)"/></g>`;
+};
+
+DRAW.soc = (c,t) => {
+  const [dx,dy,dw,dh] = c.die;
+  return `<g><rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" rx="12" fill="#151b24" stroke="#2a3441"/>
+  <rect x="${dx}" y="${dy}" width="${dw}" height="${dh}" rx="6" fill="#0b0f14" stroke="#33414f"/>
+  <text class="lbl" x="${dx+dw/2}" y="${dy+16}" text-anchor="middle" style="font-size:9px;fill:#3c4a5a">${esc(t.chip.toUpperCase())}</text></g>`;
+};
+
+DRAW.memory = (c,t) => {
+  const m = t.mem, used = m.app+m.wired+m.comp, [bx,by,bw,bh] = c.bar;
+  const pres = PRESSURE[m.pressure], pc = pres[1];
+  const segs = [['App',m.app,'#4c8dff'],['Wired',m.wired,'#8a7cf0'],['Comp.',m.comp,'#e0a24c'],['Free',m.free,'#3b4656']];
+  let o = '';
+  c.dies.forEach(d=>{ o += `<rect x="${d[0]}" y="${d[1]}" width="${d[2]}" height="${d[3]}" rx="8" fill="#0d1218" stroke="${pc}" stroke-opacity=".6" stroke-width="1.5"/>`; });
+  // composition bar
+  let cx = bx;
+  segs.forEach(s=>{
+    const sw = bw * s[1]/m.total;
+    o += `<rect x="${cx}" y="${by}" width="${Math.max(sw-1.5,1)}" height="${bh}" rx="3" fill="${s[2]}" opacity=".92"/>`;
+    cx += sw;
+  });
+  if (c.compact){
+    const dx = c.dies[0][0], dy = c.dies[0][1], dw = c.dies[0][2];
+    const tx = c.pkg[0]+14, ty = c.pkg[1]+(c.stack?24:-12);
+    o += lbl(tx,c.stack?c.pkg[1]+16:c.pkg[1]-26,'MEMORY'+(c.stack?' · STACKED ON SOC':''));
+    o += txt(tx,c.stack?c.pkg[1]+38:c.pkg[1]-4,`<tspan class="num" font-size="22">${fmt(used)}</tspan><tspan class="dim" font-size="13"> of ${m.total} GB</tspan>`,0);
+    o += `<circle cx="${c.pkg[0]+c.pkg[2]-86}" cy="${c.stack?c.pkg[1]+30:c.pkg[1]-10}" r="5.5" fill="${pc}"/>`;
+    o += txt(c.pkg[0]+c.pkg[2]-76,c.stack?c.pkg[1]+35:c.pkg[1]-5,pres[0],13,'',`font-weight="600"`);
+  } else {
+    const [a,b] = c.dies;
+    o += lbl(a[0]+14,a[1]+18,'MEMORY');
+    o += txt(a[0]+14,a[1]+44,`<tspan class="num" font-size="24">${fmt(used)}</tspan><tspan class="dim" font-size="12.5"> / ${m.total} GB</tspan>`,0);
+    o += txt(a[0]+14,a[1]+100,'unified · on package',11,'faint');
+    o += lbl(b[0]+14,b[1]+18,'PRESSURE');
+    o += `<circle cx="${b[0]+22}" cy="${b[1]+37}" r="6" fill="${pc}"/><circle cx="${b[0]+22}" cy="${b[1]+37}" r="11" fill="${pc}" opacity=".2"/>`;
+    o += txt(b[0]+36,b[1]+43,pres[0],16,'',`font-weight="600"`);
+    o += txt(b[0]+14,b[1]+100,`Swap ${fmt(m.swap)} GB`,13,'dim');
+  }
+  const pk = c.pkg;
+  return grp(c,o,[pk[0]-4,pk[1]-(c.compact&&!c.stack?34:4),pk[2]+8,pk[3]+(c.compact&&!c.stack?38:8)]);
+};
+
+DRAW.pipe = (c,t) => {
+  const {x0,x1,y,h,split} = c;
+  const [tl,tr] = c.cpuSide==='left' ? [t.cpuT,t.gpuT] : [t.gpuT,t.cpuT];
+  const [ll,lr] = c.cpuSide==='left' ? ['CPU','GPU'] : ['GPU','CPU'];
+  const gid = 'pg'+c.id, w = x1-x0, a = (split-24-x0)/w, b = (split+24-x0)/w;
+  DEFS.push(`<linearGradient id="${gid}" gradientUnits="userSpaceOnUse" x1="${x0}" x2="${x1}" y1="0" y2="0"><stop offset="0" stop-color="${heat(tl)}"/><stop offset="${a}" stop-color="${heat(tl)}"/><stop offset="${b}" stop-color="${heat(tr)}"/><stop offset="1" stop-color="${heat(tr)}"/></linearGradient>`);
+  const hot = Math.max(t.cpuT,t.gpuT);
+  const gl = clamp((hot-45)/45,0,1);
+  const ry = y-h/2;
+  let o = '';
+  if (c.spreader){
+    o += `<rect x="${x0}" y="${ry-6}" width="${w}" height="${h+12}" rx="10" fill="#1a212b" stroke="#2c3744"/>`;
+  }
+  o += `<rect x="${x0}" y="${ry}" width="${w}" height="${h}" rx="${c.spreader?6:h/2}" fill="url(#${gid})" opacity=".96"/>
+        <rect x="${x0+6}" y="${ry+3}" width="${w-12}" height="3" rx="1.5" fill="#fff" opacity=".22"/>
+        <line x1="${split}" x2="${split}" y1="${ry+4}" y2="${ry+h-4}" stroke="rgba(0,0,0,.28)" stroke-width="1" stroke-dasharray="2 3"/>`;
+  const cl = (x0+split)/2 - 6, cr = (split+x1)/2 + 6;
+  o += `<text class="halo" x="${cl}" y="${y+5.5}" text-anchor="middle" font-size="16"><tspan class="mono" font-size="10.5" style="letter-spacing:.12em;font-weight:500">${ll}</tspan><tspan class="num" dx="7">${Math.round(tl)}°</tspan></text>`;
+  o += `<text class="halo" x="${cr}" y="${y+5.5}" text-anchor="middle" font-size="16"><tspan class="mono" font-size="10.5" style="letter-spacing:.12em;font-weight:500">${lr}</tspan><tspan class="num" dx="7">${Math.round(tr)}°</tspan></text>`;
+  if (c.spreader) o += lbl(x0,ry-14,'PASSIVE SPREADER');
+  return grp(c,o,[x0-6,ry-(c.spreader?22:8),w+12,h+(c.spreader?36:16)]);
+};
+
+DRAW.fan = (c,t) => {
+  const f = t.fans[c.idx]; if (!f) return '';
+  const {cx,cy,r} = c, hubR = 36;
+  const frac = f.rpm<=0 ? 0 : clamp((f.rpm-f.min)/(f.max-f.min),0,1);
+  const rev = f.rpm<=0 ? 0 : 0.35 + 1.25*frac;     // displayed rev/s is scaled, not literal
+  let blades = '';
+  for (let i=0;i<11;i++){
+    blades += `<path d="M0 -${hubR} C 15 -${hubR+10}, 26 -${r-22}, 14 -${r-2} L -3 -${r-2} C 6 -${r-24}, 2 -${hubR+8}, -9 -${hubR} Z" transform="rotate(${i*360/11})" fill="#1c2430" stroke="#33414f" stroke-width="1"/>`;
+  }
+  const hs = r+16;
+  let o = `<rect x="${cx-hs}" y="${cy-hs}" width="${hs*2}" height="${hs*2}" rx="30" fill="#0d1218" stroke="#222c38"/>
+  <circle cx="${cx}" cy="${cy}" r="${r+4}" fill="#090c10" stroke="#2a3441"/>
+  <g transform="translate(${cx},${cy})"><g class="blades" style="${rev?`--d:${(1/rev).toFixed(2)}s`:'animation:none'}">${blades}</g></g>
+  <circle cx="${cx}" cy="${cy}" r="${hubR}" fill="#0b0f14" stroke="${f.rpm>0?'#4fc8e6':'#2f3a47'}" stroke-width="1.5"/>
+  <text x="${cx}" y="${cy+(f.rpm>0?4:2)}" text-anchor="middle" font-size="${f.rpm>=1000?19:22}" class="num">${f.rpm>0?fmt(f.rpm,0):'0'}</text>
+  <text class="lbl" x="${cx}" y="${cy+(f.rpm>0?20:19)}" text-anchor="middle" style="font-size:8.5px;letter-spacing:.14em">${f.rpm>0?'RPM':'PARKED'}</text>`;
+  o += sliderBlock(c.idx,cx,cy+hs+42,f,false);
+  return grp(c,o,[cx-hs,cy-hs-4,hs*2,hs*2+96]);
+};
+
+/* fan speed control, drawn directly under its fan. Shared by the illustrated and photo layouts. */
+function sliderBlock(idx,cx,sy,f,plated){
+  const sx = cx-80, sw = 160;
+  let o = plated ? plate(cx-98,sy-32,196,66,10,.8) : '';
+  o += `<text class="lbl" x="${sx}" y="${sy-14}">FAN ${idx+1}</text>`;
+  if (S.helper){
+    const k = clamp((f.rpm-f.min)/(f.max-f.min),0,1), tx = sx+sw*k, col = f.manual?'#ff9a3d':'#4fc8e6';
+    o += `<g data-auto="${idx}" style="cursor:pointer"><rect x="${sx+sw-56}" y="${sy-28}" width="56" height="19" rx="6" fill="${f.manual?'rgba(255,154,61,.18)':'rgba(79,200,230,.16)'}" stroke="${col}" stroke-opacity=".6"/><text x="${sx+sw-28}" y="${sy-14.5}" text-anchor="middle" font-size="10" class="mono" style="font-weight:600;letter-spacing:.1em;fill:${col}">${f.manual?'MANUAL':'AUTO'}</text></g>`;
+    o += `<g data-slider="${idx}" data-sx="${sx}" data-sw="${sw}" data-min="${f.min}" data-max="${f.max}" style="cursor:ew-resize">
+      <rect x="${sx-14}" y="${sy-6}" width="${sw+28}" height="30" fill="transparent"/>
+      <line x1="${sx}" x2="${sx+sw}" y1="${sy+8}" y2="${sy+8}" stroke="rgba(255,255,255,.18)" stroke-width="5" stroke-linecap="round"/>
+      <line x1="${sx}" x2="${tx}" y1="${sy+8}" y2="${sy+8}" stroke="${col}" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="${tx}" cy="${sy+8}" r="9" fill="#f4f7fb" stroke="rgba(0,0,0,.45)"/></g>`;
+    o += `<text x="${sx}" y="${sy+30}" font-size="10" class="mono faint">${fmt(f.min,0)}</text><text x="${sx+sw}" y="${sy+30}" text-anchor="end" font-size="10" class="mono faint">${fmt(f.max,0)}</text>`;
+  } else {
+    o += `<g data-helper="1" style="cursor:pointer"><rect x="${sx-4}" y="${sy-4}" width="${sw+8}" height="30" rx="8" fill="rgba(255,255,255,.06)" stroke="rgba(255,255,255,.2)"/>
+      <path d="M${sx+8} ${sy+12} v-3.5 a3.5 3.5 0 0 1 7 0 v3.5 M${sx+6} ${sy+12} h11 v7 h-11 z" fill="none" stroke="#9aa5b4" stroke-width="1.4"/>
+      <text x="${sx+26}" y="${sy+16}" font-size="11.5" class="dim">Install helper to set speed</text></g>`;
+  }
+  return o;
+}
+
+DRAW.wifi = (c,t) => {
+  const n = t.net, {x,y,w,h} = c;
+  const live = clamp(Math.log10(Math.max(n.down+n.up,1))/7.5,0,1);
+  let o = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="#12202a" stroke="#4fc8e6" stroke-opacity=".55" ${dashed(c)}/>
+  <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" fill="#4fc8e6" opacity="${.04+live*.12}"/>
+  <line x1="${x+w/2}" x2="${x+w/2}" y1="${y}" y2="474" stroke="rgba(79,200,230,.28)" stroke-dasharray="3 4"/>`;
+  const f1 = c.small?12:14.5;
+  o += lbl(x+12,y+17,c.small?'WI-FI':'WI-FI · BT','style="fill:#cfe6ef"');
+  o += txt(x+12,y+(c.small?38:38),`<tspan class="dim">↓</tspan> <tspan class="num">${rate(n.down)}</tspan>`,f1);
+  o += txt(x+12,y+(c.small?57:57),`<tspan class="dim">↑</tspan> <tspan class="num">${rate(n.up)}</tspan>`,f1);
+  return grp(c,o,[x,y,w,h]);
+};
+
+DRAW.ssd = (c,t) => {
+  const s = t.ssd, [tx,ty,tw] = c.tx, used = 1 - s.free/s.cap;
+  let o = '';
+  c.chips.forEach((k,i)=>{
+    o += `<rect x="${k[0]}" y="${k[1]}" width="${k[2]}" height="${k[3]}" rx="6" fill="#10161d" stroke="#3a4757" ${dashed(c)}/>
+    <text class="lbl" x="${k[0]+k[2]/2}" y="${k[1]+k[3]/2+4}" text-anchor="middle" style="font-size:9.5px">NAND</text>`;
+  });
+  if (c.chips.length>1 || c.chips[0][2]<200){
+    o += lbl(tx,ty-8,'STORAGE · SSD');
+    o += txt(tx,ty+12,`<tspan class="num" font-size="17">${fmt(s.free,0)} GB</tspan><tspan class="dim" font-size="13"> free of ${fmt(s.cap,0)}</tspan>`,0);
+    o += `<rect x="${tx}" y="${ty+22}" width="${tw}" height="8" rx="4" fill="rgba(255,255,255,.08)"/><rect x="${tx}" y="${ty+22}" width="${tw*used}" height="8" rx="4" fill="${used>.9?'#ff9a3d':'#00e5a0'}"/>`;
+  }
+  return grp(c,o,c.box);
+};
+
+DRAW.adapter = (c,t) => {
+  const a = t.adapter; let o = '';
+  const usb = (c.usbc||[]).map(p=>`<rect x="${p[0]}" y="${p[1]}" width="${p[2]}" height="${p[3]}" rx="4" fill="#06080b" stroke="#3a4757"/>`).join('');
+  o += usb;
+  if (c.port) o += `<rect x="${c.port[0]}" y="${c.port[1]}" width="${c.port[2]}" height="${c.port[3]}" rx="5" fill="#06080b" stroke="#4fc8e6"/><rect x="${c.port[0]+4}" y="${c.port[1]+9}" width="14" height="6" rx="2" fill="#4fc8e6" opacity=".6"/>`;
+  if (c.usbcPower) o += `<rect x="40" y="574" width="22" height="16" rx="4" fill="#06080b" stroke="#4fc8e6"/>`;
+  const {x,y,w,h} = c;
+  const arrow = `<path d="M${x-4} ${y+22} h-14 m6 -6 l-6 6 l6 6" fill="none" stroke="#4fc8e6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`;
+  o += `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="9" fill="rgba(79,200,230,.07)" stroke="rgba(79,200,230,.4)"/>`;
+  o += lbl(x+12,y+17,c.usbcPower?'USB-C · POWER IN':'MAGSAFE 3 · POWER IN');
+  o += txt(x+12,y+36,`<tspan class="num" font-size="15">${a.inEst?'≈ ':''}${fmt(a.inW)} W</tspan> <tspan class="dim" font-size="12.5">in · ${a.note}</tspan>`,0);
+  return grp(c,o,[x-6,y-6,w+12,h+12]);
+};
+
+DRAW.speaker = c => {
+  let g = '';
+  for (let i=0;i<14;i++) g += `<rect x="${c.x+8}" y="${c.y+14+i*(c.h-28)/13}" width="${c.w-16}" height="3" rx="1.5" fill="#1c242f"/>`;
+  return `<g data-c="${c.id}"><rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" rx="10" fill="#0d1116" stroke="#1d2530"/>${g}</g>`;
+};
+DRAW.trackpad = c => `<g data-c="${c.id}"><rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" rx="14" fill="none" stroke="rgba(255,255,255,.12)" stroke-dasharray="2 5"/><text class="lbl" x="${c.x+c.w/2}" y="${c.y+c.h+14}" text-anchor="middle" style="font-size:9px;fill:#3e4a59">TRACKPAD</text></g>`;
+DRAW.note = c => `<g>${c.text.map((l,i)=>`<text x="${c.x}" y="${c.y+i*20}" font-size="${i?13:15}" class="${i?'faint':'dim'}" font-weight="${i?400:600}">${esc(l)}</text>`).join('')}</g>`;
+DRAW.gframe = c => `<rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" rx="28" fill="rgba(255,255,255,.015)" stroke="rgba(255,255,255,.14)" stroke-dasharray="8 7"/>`;
+
+DRAW.psu = (c,t) => {
+  const a = t.adapter, {x,y,w,h} = c;
+  let o = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="12" fill="#0f141b" stroke="#2a3441"/>`;
+  for (let i=0;i<9;i++) o += `<rect x="${x+w-250+i*26}" y="${y+16}" width="14" height="${h-32}" rx="3" fill="#141b24"/>`;
+  o += lbl(x+22,y+30,'POWER SUPPLY · WALL POWER');
+  o += txt(x+22,y+74,`<tspan class="num" font-size="38">${fmt(a.inW)}</tspan><tspan class="dim" font-size="18"> W</tspan> <tspan class="dim" font-size="13">  whole-Mac draw</tspan>`,0);
+  return grp(c,o,[x,y,w,h]);
+};
+
+/* ---------- teardown-photo layout: readouts sit on glass plates over the real photograph ---------- */
+DRAW.photo = () => `<g clip-path="url(#photoClip)"><use href="#ph"/><rect x="40" y="${PH.y}" width="1020" height="${PH.h}" fill="rgba(3,5,8,.30)"/></g>
+  <rect x="40" y="${PH.y}" width="1020" height="${PH.h}" rx="26" fill="none" stroke="var(--edge)"/>
+  <text x="550" y="${PH.y+PH.h+22}" text-anchor="middle" font-size="10.5" class="mono faint" style="letter-spacing:.05em">STAND-IN PHOTO: INTEL-BASED 16″ MACBOOK PRO (2019) · CC0 · NETHA HUSSAIN, WIKIMEDIA COMMONS · NOT AN APPLE SILICON BOARD</text>`;
+
+DRAW.pfan = (c,t) => {
+  const f = t.fans[c.idx]; if (!f) return '';
+  const [cx,cy] = P(c.px,c.py), r = PS(126), r0 = PS(80);
+  const frac = f.rpm<=0 ? 0 : clamp((f.rpm-f.min)/(f.max-f.min),0,1), rev = f.rpm<=0 ? 0 : 0.35+1.25*frac;
+  let o = '';
+  if (rev){   // an impeller drawn flat from scratch, so no photo perspective or lighting turns with it
+    let bl = '';
+    const N = 33, ex = r*.97*Math.cos(-.5), ey = r*.97*Math.sin(-.5), mx = (r0+r)/2;
+    for (let i=0;i<N;i++){
+      const d = `M ${r0.toFixed(1)} 0 Q ${mx.toFixed(1)} ${(-r*.07).toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}`;
+      bl += `<path d="${d}" transform="rotate(${(i*360/N).toFixed(2)})" fill="none" stroke="#39414c" stroke-width="1.5" stroke-linecap="round"/><path d="${d}" transform="rotate(${(i*360/N+1.1).toFixed(2)})" fill="none" stroke="#1d232b" stroke-width="1"/>`;
+    }
+    o += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="#090c10"/><g transform="translate(${cx},${cy})"><g class="blades" style="--d:${(1/rev).toFixed(2)}s">${bl}</g></g>
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#fanShine)"/>`;
+  }
+  o += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${f.rpm>0?'#4fc8e6':'rgba(255,255,255,.12)'}" stroke-opacity=".5"/>
+    <circle cx="${cx}" cy="${cy}" r="33" fill="rgba(7,9,12,.82)" stroke="${f.rpm>0?'#4fc8e6':'rgba(255,255,255,.2)'}" stroke-width="1.5"/>
+    <text x="${cx}" y="${cy+(f.rpm>0?3:2)}" text-anchor="middle" font-size="${f.rpm>=1000?18:22}" class="num">${f.rpm>0?fmt(f.rpm,0):'0'}</text>
+    <text class="lbl" x="${cx}" y="${cy+19}" text-anchor="middle" style="font-size:8px;letter-spacing:.14em">${f.rpm>0?'RPM':'PARKED'}</text>`;
+  const sy = P(0,735)[1]+32;
+  o += sliderBlock(c.idx,cx,sy,f,true);
+  return grp(c,o,[cx-100,cy-r-4,200,sy+36-(cy-r-4)]);
+};
+
+function pill(cx,cy,name,val,col){
+  const w = 96, h = 28;
+  return `${plate(cx-w/2,cy-h/2,w,h,14,.84)}<circle cx="${cx-w/2+14}" cy="${cy}" r="5" fill="${col}"/>
+    <text class="lbl" x="${cx-w/2+25}" y="${cy+3.5}" style="font-size:10px">${name}</text>
+    <text x="${cx+w/2-12}" y="${cy+6}" text-anchor="end" font-size="17" class="num">${val}</text>`;
+}
+DRAW.ppipe = (c,t) => {
+  const [tl,tr] = c.cpuSide==='left' ? [t.cpuT,t.gpuT] : [t.gpuT,t.cpuT];
+  const [nl,nr] = c.cpuSide==='left' ? ['CPU','GPU'] : ['GPU','CPU'];
+  const w = c.x1-c.x0, ww = c.wu1-c.wu0, a = c.wpath ? .5-52/ww : (c.split-70-c.x0)/w, b = c.wpath ? .5+52/ww : (c.split+70-c.x0)/w;
+  DEFS.push(`<linearGradient id="pgp" gradientUnits="userSpaceOnUse" x1="${c.wpath?c.wu0:WP(c.x0,394)[0]}" x2="${c.wpath?c.wu1:WP(c.x1,394)[0]}" y1="0" y2="0"><stop offset="0" stop-color="${heat(tl)}"/><stop offset="${a}" stop-color="${heat(tl)}"/><stop offset="${b}" stop-color="${heat(tr)}"/><stop offset="1" stop-color="${heat(tr)}"/></linearGradient>`);
+  const hot = Math.max(t.cpuT,t.gpuT), gl = clamp((hot-45)/45,0,1);
+  const sw = WARP.K*WARP.S, main = c.wpath || warpPath(c.path);
+  let o = `<g transform="translate(${PH.x},${PH.y}) scale(${PH.s})">
+    <path class="ring2" d="${main}" fill="none" stroke="transparent" stroke-width="${(110*sw).toFixed(1)}" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="${main}" fill="none" stroke="url(#pgp)" stroke-width="${(86*sw).toFixed(1)}" stroke-linecap="round" stroke-linejoin="round" opacity=".66"/></g>`;
+  const [lx,ly] = c.cpuW ? [PH.x+c.cpuW[0]*PH.s, PH.y+c.cpuW[1]*PH.s] : P(...c.cpuAt), [rx,ry] = c.gpuW ? [PH.x+c.gpuW[0]*PH.s, PH.y+c.gpuW[1]*PH.s] : P(...c.gpuAt);
+  o += pill(lx,ly,nl,`${Math.round(tl)}°`,heat(tl)) + pill(rx,ry,nr,`${Math.round(tr)}°`,heat(tr));
+  const [bx,by,bw,bh] = FR(680,150,920,320);
+  return grp(c,o,[bx,by,bw,bh]);
+};
+
+/* Positions below are fractions of the chassis, read off a real Apple silicon 14-inch teardown photo kept as a private reference
+   (not shown here): one memory module on each side of the SoC, and two NAND chips low on the board beside the trackpad cable. */
+const PF = (fx,fy) => [40+fx*1020, PH.y+fy*PH.h];
+DRAW.pmem = (c,t) => {
+  const m = t.mem, used = m.app+m.wired+m.comp, pres = PRESSURE[m.pressure], pc = pres[1];
+  const segs = [[m.app,'#4c8dff'],[m.wired,'#8a7cf0'],[m.comp,'#e0a24c'],[m.free,'#3b4656']];
+  const mod = (fx0,fx1) => { const [x,y] = PF(fx0,.234); return [x,y,(fx1-fx0)*1020,.22*PH.h]; };
+  const L = mod(.318,.416), Rr = mod(.582,.68);
+  const plateAt = m_ => { const px = m_[0]+3, py = m_[1]+m_[3]*.36, pw = m_[2]-6, ph = m_[3]*.62; return [px,py,pw,ph]; };
+  const dash = m_ => `<rect x="${m_[0]}" y="${m_[1]}" width="${m_[2]}" height="${m_[3]}" rx="6" fill="none" stroke="${pc}" stroke-opacity=".55" stroke-dasharray="5 4"/>`;
+  const [lx,ly,lw,lh] = plateAt(L), [rx,ry,rw,rh] = plateAt(Rr);
+  let a = dash(L) + plate(lx,ly,lw,lh,8,.84);
+  a += lbl(lx+9,ly+15,'MEMORY').replace('<text','<text style="font-size:8.5px"');
+  a += txt(lx+9,ly+40,`<tspan class="num" font-size="22">${fmt(used)}</tspan>`,0);
+  a += txt(lx+9,ly+55,`of ${m.total} GB`,11,'dim');
+  let cx = lx+9; const bw = lw-18;
+  segs.forEach(sg=>{ const w = bw*sg[0]/m.total; a += `<rect x="${cx}" y="${ly+lh-13}" width="${Math.max(w-1.2,1)}" height="6" rx="2" fill="${sg[1]}"/>`; cx += w; });
+  let b = dash(Rr) + plate(rx,ry,rw,rh,8,.84);
+  b += lbl(rx+9,ry+15,'PRESSURE').replace('<text','<text style="font-size:8.5px"');
+  b += `<circle cx="${rx+16}" cy="${ry+35}" r="5" fill="${pc}"/><text x="${rx+27}" y="${ry+40}" font-size="14" font-weight="600">${pres[0]}</text>`;
+  b += txt(rx+9,ry+57,`Swap ${fmt(m.swap)} GB`,11.5,'dim');
+  return grp(c,a,[L[0]-3,L[1]-3,L[2]+6,L[3]+6]) + grp(c,b,[Rr[0]-3,Rr[1]-3,Rr[2]+6,Rr[3]+6]);
+};
+
+DRAW.pssd = (c,t) => {
+  const s = t.ssd, used = 1-s.free/s.cap;
+  const A = [...PF(.38,.516), .037*1020, .056*PH.h], B = [...PF(.614,.462), .102*1020, .118*PH.h];
+  const px = 474, pw = 184, py = PH.y+PH.h*.49, ph = 54;
+  const chip = k => `<rect x="${k[0]}" y="${k[1]}" width="${k[2]}" height="${k[3]}" rx="4" fill="none" stroke="#4fc8e6" stroke-opacity=".6" stroke-dasharray="4 3"/><text class="lbl" x="${k[0]+k[2]/2}" y="${k[1]+k[3]/2+3}" text-anchor="middle" style="font-size:8px;fill:#6fb7c6">NAND</text>`;
+  let o = chip(A)+chip(B);
+  o += `<line x1="${A[0]+A[2]}" x2="${px}" y1="${A[1]+A[3]/2}" y2="${py+ph/2}" stroke="#4fc8e6" stroke-opacity=".45" stroke-dasharray="3 3"/><line x1="${px+pw}" x2="${B[0]}" y1="${py+ph/2}" y2="${B[1]+B[3]/2}" stroke="#4fc8e6" stroke-opacity=".45" stroke-dasharray="3 3"/>`;
+  o += plate(px,py,pw,ph,10,.84,'rgba(255,255,255,.14)','stroke-dasharray="5 4"');
+  o += lbl(px+12,py+16,'STORAGE');
+  o += txt(px+12,py+35,`<tspan class="num" font-size="16">${fmt(s.free,0)} GB</tspan><tspan class="dim" font-size="12"> free of ${fmt(s.cap,0)}</tspan>`,0);
+  o += `<rect x="${px+12}" y="${py+ph-10}" width="${pw-24}" height="4" rx="2" fill="rgba(255,255,255,.1)"/><rect x="${px+12}" y="${py+ph-10}" width="${(pw-24)*used}" height="4" rx="2" fill="${used>.9?'#ff9a3d':'#00e5a0'}"/>`;
+  return grp(c,o,[A[0]-4,Math.min(A[1],B[1],py)-4,B[0]+B[2]-A[0]+8,Math.max(A[1]+A[3],B[1]+B[3],py+ph)-Math.min(A[1],B[1],py)+8]);
+};
+
+DRAW.pwifi = (c,t) => {
+  const n = t.net, [x,y] = P(1992,590), w = PS(250), h = 58;
+  let o = plate(x,y,w,h,10,.82,'#4fc8e6','stroke-opacity=".55" stroke-dasharray="5 4"');
+  o += lbl(x+12,y+17,'WI-FI · BT');
+  o += txt(x+12,y+35,`<tspan class="dim">↓</tspan> <tspan class="num">${rate(n.down)}</tspan>`,13);
+  o += txt(x+12,y+52,`<tspan class="dim">↑</tspan> <tspan class="num">${rate(n.up)}</tspan>`,13);
+  return grp(c,o,[x-4,y-4,w+8,h+8]);
+};
+
+DRAW.padapter = (c,t) => {
+  const a = t.adapter, [x,y] = P(60,95), w = PS(500), h = PS(100), [px,py] = P(150,300);
+  let o = `<line x1="${x+34}" x2="${px}" y1="${y+h}" y2="${py}" stroke="#4fc8e6" stroke-opacity=".6" stroke-dasharray="3 4"/><circle cx="${px}" cy="${py}" r="4" fill="#4fc8e6"/>`;
+  o += plate(x,y,w,h,10,.84,'#4fc8e6','stroke-opacity=".5"');
+  o += lbl(x+12,y+17,'MAGSAFE 3 · POWER IN');
+  o += txt(x+12,y+36,`<tspan class="num" font-size="15">${a.inEst?'≈ ':''}${fmt(a.inW)} W</tspan> <tspan class="dim" font-size="12.5">in · ${a.note}</tspan>`,0);
+  return grp(c,o,[x-4,y-4,w+8,py-y+12]);
+};
+
+/* battery */
+const ROLE = {};
+ROLE.charge = (x,y,w,h,t) => {
+  const b = t.bat, ok = b.pct>20;
+  return `<rect x="${x}" y="${y}" width="${w*b.pct/100}" height="${h}" rx="12" fill="${ok?'#00e5a0':'#ff9a3d'}" opacity=".12"/>
+    ${lbl(x+16,y+24,'CHARGE')}${txt(x+16,y+Math.min(h-14,72),`<tspan class="num" font-size="${h>110?54:44}">${b.pct}</tspan><tspan class="dim" font-size="20"> %</tspan>`,0)}`;
+};
+ROLE.temp = (x,y,w,h,t) => {
+  const b = t.bat, k = clamp((b.temp-20)/30,0,1);
+  return `${lbl(x+16,y+24,'BATTERY TEMP')}${txt(x+16,y+Math.min(h-24,62),`<tspan class="num" font-size="34">${fmt(b.temp)}</tspan><tspan class="dim" font-size="16"> °C</tspan>`,0)}
+    <rect x="${x+16}" y="${y+h-16}" width="${w-32}" height="4" rx="2" fill="rgba(255,255,255,.08)"/><rect x="${x+16}" y="${y+h-16}" width="${(w-32)*k}" height="4" rx="2" fill="${heat(b.temp+12)}"/>`;
+};
+ROLE.state = (x,y,w,h,t) => {
+  const b = t.bat, time = b.time || 'time left —', tall = h>=120;
+  return `${lbl(x+16,y+24,'STATE · RATE')}${txt(x+16,y+54,`<tspan font-size="${w<250?19:21}" font-weight="600">${esc(b.state)}</tspan>`,0)}
+    ${tall ? txt(x+16,y+80,`<tspan class="num" font-size="14">${esc(b.sub)}</tspan>`,0)+txt(x+16,y+102,`<tspan class="dim" font-size="13">${esc(time)}</tspan>`,0)
+           : txt(x+16,y+Math.min(h-12,80),`<tspan class="num" font-size="14">${esc(b.sub)}</tspan>   <tspan class="dim" font-size="13">${esc(time)}</tspan>`,0)}`;
+};
+ROLE.graph = (x,y,w,h,t) => {
+  const b = t.bat;
+  return `${lbl(x+16,y+22,'CHARGE · LAST 24 H')}${spark(x+16,y+32,w-34,h-46,b.hist,'#00e5a0',{min:0,max:100,sw:1.8,grid:true})}`;
+};
+ROLE.draw = (x,y,w,h,t) => {
+  const b = t.bat, k = clamp(b.drawW/70,0,1);
+  return `${lbl(x+16,y+24,'SYSTEM DRAW')}${txt(x+16,y+Math.min(h-26,64),`<tspan class="num" font-size="36">${fmt(b.drawW)}</tspan><tspan class="dim" font-size="17"> W</tspan>`,0)}
+    <rect x="${x+16}" y="${y+h-16}" width="${w-32}" height="4" rx="2" fill="rgba(255,255,255,.08)"/><rect x="${x+16}" y="${y+h-16}" width="${(w-32)*k}" height="4" rx="2" fill="#00e5a0"/>`;
+};
+ROLE.health = (x,y,w,h,t) => {
+  const b = t.bat;
+  const narrow = w<250;
+  return `${lbl(x+16,y+24,'HEALTH')}${txt(x+16,y+(narrow?64:Math.min(h-24,62)),`<tspan class="num" font-size="34">${b.health}</tspan><tspan class="dim" font-size="16"> %</tspan>`,0)}
+    ${narrow ? txt(x+16,y+90,`${b.cycles} of ${b.design} cycles`,13,'dim') : txt(x+w-16,y+Math.min(h-24,62),`${b.cycles} / ${b.design} cycles`,13,'dim','text-anchor="end"')}`;
+};
+DRAW.battery = (c,t) => {
+  if (!t.bat) return '';
+  let o = '', xs=1e9,ys=1e9,xe=0,ye=0;
+  c.cells.forEach(cell=>{
+    xs=Math.min(xs,cell.x);ys=Math.min(ys,cell.y);xe=Math.max(xe,cell.x+cell.w);ye=Math.max(ye,cell.y+cell.h);
+    o += c.plated
+      ? plate(cell.x+3,cell.y+3,cell.w-6,cell.h-6,12,.84)
+      : `<rect x="${cell.x}" y="${cell.y}" width="${cell.w}" height="${cell.h}" rx="12" fill="#10151b" stroke="#26303c" ${dashed(c)}/>
+          <rect x="${cell.x+cell.w/2-24}" y="${cell.y-3}" width="48" height="5" rx="2.5" fill="#26303c"/>`;
+    const hs = cell.roles.length>1 ? cell.roles.map((r,i)=>[r, cell.h*[.40,.28,.32][i]]) : [[cell.roles[0],cell.h]];
+    let yy = cell.y;
+    hs.forEach(([r,hh],i)=>{
+      if (i>0) o += `<line x1="${cell.x+14}" x2="${cell.x+cell.w-14}" y1="${yy}" y2="${yy}" stroke="rgba(255,255,255,.07)"/>`;
+      o += `<g data-role="${r}">${ROLE[r](cell.x,yy,cell.w,hh,t)}</g>`; yy += hh;
+    });
+  });
+  return `<g class="comp${S.pinned==='battery'?' pinned':''}" data-c="battery" tabindex="0"><rect class="ring" x="${xs-6}" y="${ys-8}" width="${xe-xs+12}" height="${ye-ys+16}" rx="16"/>${o}</g>`;
+};
+
+/* ---------- chassis ---------- */
+function chassis(L){
+  DEFS.push(`<linearGradient id="lid" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1a1e25"/><stop offset="1" stop-color="#0d1015"/></linearGradient>
+  <linearGradient id="base" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#171b22"/><stop offset="1" stop-color="#0c0f13"/></linearGradient>
+  <linearGradient id="hinge" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a313b"/><stop offset="1" stop-color="#12161c"/></linearGradient>`);
+  if (L.kind==='laptopPhoto') return `<rect x="40" y="10" width="1020" height="430" rx="26" fill="url(#lid)" stroke="var(--edge)"/>
+    <rect x="58" y="26" width="984" height="398" rx="10" fill="#040506" stroke="rgba(255,255,255,.05)"/>
+    <rect x="90" y="440" width="920" height="22" rx="6" fill="url(#hinge)"/>`;
+  if (L.kind==='laptop') return `<rect x="40" y="10" width="1020" height="430" rx="26" fill="url(#lid)" stroke="var(--edge)"/>
+    <rect x="58" y="26" width="984" height="398" rx="10" fill="#040506" stroke="rgba(255,255,255,.05)"/>
+    <rect x="90" y="440" width="920" height="22" rx="6" fill="url(#hinge)"/>
+    <rect x="40" y="462" width="1020" height="650" rx="30" fill="url(#base)" stroke="var(--edge)"/>
+    <rect x="56" y="476" width="988" height="620" rx="20" fill="#090b0e" stroke="rgba(255,255,255,.05)"/>`;
+  if (L.kind==='desktop') return `<rect x="190" y="30" width="720" height="730" rx="46" fill="url(#base)" stroke="var(--edge)"/>
+    <rect x="206" y="46" width="688" height="698" rx="34" fill="#090b0e" stroke="rgba(255,255,255,.05)"/>
+    <rect x="250" y="190" width="600" height="360" rx="22" fill="#0e1218" stroke="#1e2733"/>`;
+  return '';
+}
+
+/* ---------- detail content (hover + pinned) ---------- */
+const R = (k,v,tag) => [k,v,tag];
+const CONF = {verified:'Layout verified from teardowns',inferred:'Position approximate · inferred'};
+function detail(c,t,roleId){
+  const f = n => fmt(n);
+  switch(c.dk||c.kind){
+    case 'display': { const d=t.disp; return {title:'Display',conf:CONF[c.conf],rows:[
+      R('Power',`${fmt(d.watts,2)} W`,d.measured?'real':'est'),R('Brightness',`${d.bright} %`,d.brightEx?'ex':'real'),R('Panel',`${c.dname||d.name}`),R('Resolution',c.res||d.res,'real'),R('Temperature','not exposed')],
+      note:(d.measured?'Backlight power comes from a rail only identified on this Mac (PDBR).':'Display power is estimated from brightness on this Mac.')+' macOS exposes no display temperature. The graph is a live buffer that starts empty and clears when this window closes.',series:{name:'Display power · since opened',vals:d.hist,unit:' W',color:'#4fc8e6'}}; }
+    case 'fan': { const x=t.fans[c.idx]; return {title:`Fan ${c.idx+1}`,conf:CONF[c.conf],rows:[
+      R('Speed',x.rpm>0?`${fmt(x.rpm,0)} rpm`:'0 rpm · parked','real'),R('Range',`${fmt(x.min,0)} – ${fmt(x.max,0)} rpm`,'real'),R('Mode',x.manual?'Manual':'Automatic'),R('Control',S.helper?'Helper installed':'Needs helper')],
+      note:'0 rpm is a real reading: the fans stop when the Mac is cool. Blade motion is scaled for legibility, not literal speed.',series:{name:'Speed · since opened',vals:t.series.rpm[0],unit:' rpm',color:'#4fc8e6',fmt:0}}; }
+    case 'pipe': return {title:c.spreader?'Passive spreader':'Heat pipe',conf:c.dieSide?'Pipe verified · which half is CPU or GPU is inferred':CONF[c.conf],rows:[
+      R('CPU',`${f(t.cpuT)} °C`,'real'),R('CPU sensors',`mean of ${t.cpuSensors||23} die sensors`),R('GPU',`${f(t.gpuT)} °C`,'real'),R('GPU sensors',`mean of ${t.gpuSensors||42} sensors`)],
+      note:c.spreader?'No fan: heat leaves through a metal plate and the case.':(c.short?'Base chips have one fan and a shorter pipe.':'One pipe runs fan to fan across the chip. Each half takes the colour of the part on that side.'),series:{name:'CPU temp · since opened',vals:t.series.cpu,unit:' °C',color:heat(t.cpuT)}};
+    case 'memory': { const m=t.mem,u=m.app+m.wired+m.comp; return {title:'Memory',conf:CONF[c.conf],rows:[
+      R('In use',`${f(u)} of ${m.total} GB`,'real'),R('App',`${f(m.app)} GB`,'real'),R('Wired',`${f(m.wired)} GB`,'real'),R('Compressed',`${f(m.comp)} GB`,'real'),R('Free + cached',`${f(m.free)} GB`,'real'),R('Pressure',PRESSURE[m.pressure][0],'real'),R('Swap',`${f(m.swap)} GB`,'real')],
+      note:'Pressure is the kernel’s own level, with Apple’s green, yellow, red. Active, inactive and cached are not split out by Anode.',series:{name:'In use · since opened',vals:t.series.mem,unit:' GB',color:'#4c8dff'}}; }
+    case 'wifi': return {title:'Wi-Fi and Bluetooth',conf:CONF[c.conf],rows:[
+      R('Download',rate(t.net.down),'real'),R('Upload',rate(t.net.up),'real'),R('Interface',t.net.iface),R('Signal strength','not exposed')],
+      note:'Throughput is per interface. macOS does not give Anode signal strength, channel or link rate, so none are shown. Antenna positions are approximate.',series:{name:'Download · since opened',vals:t.series.down,unit:'',color:'#4fc8e6',rate:true}};
+    case 'ssd': { const s=t.ssd; return {title:'Storage',conf:CONF[c.conf],rows:[
+      R('Free',`${fmt(s.free,0)} of ${fmt(s.cap,0)} GB`,'real'),R('Read / write',`${rate(s.rd)} · ${rate(s.wr)}`,'real'),R('Drive',s.name,'real'),R('Temperature',`${f(s.temp)} °C`,'real'),R('Wear used',`${s.wear} %`,'real'),R('Spare',`${s.spare} %`,'real'),R('Written',`${f(s.written)} TB`,'real')],
+      note:'Health comes from the drive’s own SMART log. Anode never shows a write allowance because Apple does not publish one.',series:{name:'Read · since opened',vals:t.series.rd,unit:'',color:'#00e5a0',rate:true}}; }
+    case 'adapter': { const a=t.adapter; return {title:c.usbcPower?'USB-C power in':'MagSafe 3 · power in',conf:CONF[c.conf],rows:[
+      R('Adapter rating',`${a.ratedW} W`,'real'),R('Drawing from adapter',`${a.inEst?'≈ ':''}${f(a.inW)} W`,a.inEst?'est':'real'),R('State',a.note)],
+      note:'This is what comes in. “System draw” on the battery is what the whole Mac uses. They differ while the battery charges or discharges.'}; }
+    case 'psu': { const a=t.adapter; return {title:'Power supply',conf:CONF[c.conf],rows:[R('Whole-Mac draw',`${f(a.inW)} W`,'real'),R('Source','Wall power')],note:'Desktops have no battery. Draw comes from the same system-power reading.'}; }
+    case 'battery': {
+      const b=t.bat; const roles={
+      charge:{title:'Charge',rows:[R('Charge',`${b.pct} %`,'real'),R('Health',`${b.health} %`,'real'),R('Cycles',`${b.cycles} of ${b.design}`,'real')]},
+      temp:{title:'Battery temperature',rows:[R('Pack',`${f(b.temp)} °C`,'real'),R('Sensors','3 pack sensors, cross-checked with IOKit')]},
+      state:{title:'State and rate',rows:[R('State',b.state),R('Current',b.sub,'real'),R('Time',b.time||'—',b.time?'est':'')]},
+      graph:{title:'Charge, last 24 hours',rows:[R('Now',`${b.pct} %`,'real'),R('Source','Anode history')],series:{name:'Charge · 24 h',vals:b.hist,unit:' %',color:'#00e5a0',fmt:0}},
+      draw:{title:'System draw',rows:[R('Whole Mac',`${f(b.drawW)} W`,'real'),R('Not the same as','charger input')]},
+      health:{title:'Health',rows:[R('Capacity vs new',`${b.health} %`,'real'),R('Cycles',`${b.cycles} of ${b.design}`,'real')]}}[roleId||'charge'];
+      return Object.assign({conf:CONF[c.conf],note:'macOS reports one reading for the whole pack, so these are pack readings shown on the cells they physically belong to.'},roles); }
+  }
+  return {title:c.kind,rows:[],conf:''};
+}
+
+/* ---------- render ---------- */
+function render(){
+  const L = LAYOUTS[S.layout], t = T();
+  DEFS = [];
+  const parts = [chassis(L)];
+  const order = ['board','antenna','soc','pipeUnder','gframe'];
+  const body = [];
+  L.comps.forEach(c=>{ if (DRAW[c.kind]) body.push(c); });
+  // draw order: structural first, then chips, then pipe over chips, then overlays
+  const rank = k => ({photo:0,gframe:0,board:1,antenna:2,speaker:2,trackpad:2,soc:3,fan:4,pfan:4,memory:5,ssd:5,wifi:5,adapter:5,psu:5,battery:5,pipe:6,ppipe:6,display:5,note:6}[k] ?? 5);
+  body.sort((a,b)=>rank(a.kind)-rank(b.kind));
+  body.forEach(c=>{ parts.push(DRAW[c.kind](c,t)); });
+  $('#ddefs').innerHTML = DEFS.join('');
+  $('#scene').innerHTML = parts.join('');
+  $('#winTitle').textContent = L.title;
+  $('#win').classList.toggle('is-sample', t.sample);
+  $('#liveTxt').textContent = S.scen==='load' ? 'Live · 1 s (fans driven)' : 'Live · 2 s';
+  applyView(false);
+  buildChips();
+  if (S.pinned) showPin(); else $('#pin').style.display='none';
+}
+
+/* narrow-window behaviour: chips jump the view to one component */
+function buildChips(){
+  const L = LAYOUTS[S.layout];
+  const items = L.comps.filter(c=>c.chip);
+  const seen = new Set(), list=[];
+  items.forEach(c=>{ if(!seen.has(c.chip)){ seen.add(c.chip); list.push(c);} });
+  if (!S.focusId || !list.find(c=>c.id===S.focusId)) S.focusId = list[0] && list[0].id;
+  $('#chips').innerHTML = list.map(c=>`<button role="tab" aria-pressed="${c.id===S.focusId}" data-focus="${c.id}">${esc(c.chip)}</button>`).join('');
+}
+let vbAnim = null;
+function applyView(animate){
+  const L = LAYOUTS[S.layout], svg = $('#hw');
+  let target = L.vb;
+  if (S.narrow){
+    const c = L.comps.find(c=>c.id===S.focusId);
+    if (c && c.focus) target = c.focus;
+  }
+  const cur = svg.getAttribute('viewBox').split(' ').map(Number);
+  cancelAnimationFrame(vbAnim);
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!animate || reduce){ svg.setAttribute('viewBox',target.join(' ')); return; }
+  const t0 = performance.now();
+  const step = now => { const k = clamp((now-t0)/260,0,1), e = 1-Math.pow(1-k,3);
+    svg.setAttribute('viewBox',cur.map((v,i)=>v+(target[i]-v)*e).join(' '));
+    if (k<1) vbAnim = requestAnimationFrame(step); };
+  vbAnim = requestAnimationFrame(step);
+}
+function checkNarrow(){
+  const w = $('#stage').getBoundingClientRect().width;
+  const n = w < 640;
+  if (n !== S.narrow){ S.narrow = n; $('#win').classList.toggle('narrow',n); applyView(false); }
+}
+new ResizeObserver(checkNarrow).observe($('#stage'));
+
+/* ---------- tooltip & pin ---------- */
+function rowsHtml(rows){ return `<div class="rows">${rows.map(r=>`<span>${esc(r[0])}</span><span>${esc(r[1])}${r[2]?`<span class="tag ${r[2]}">${{real:'REAL',est:'EST',ex:'EXAMPLE'}[r[2]]}</span>`:''}</span>`).join('')}</div>`; }
+function findComp(el){
+  const g = el.closest && el.closest('[data-c]'); if (!g) return null;
+  const c = LAYOUTS[S.layout].comps.find(x=>x.id===g.dataset.c); if (!c) return null;
+  const rg = el.closest('[data-role]');
+  return {c, role: rg && rg.dataset.role, g};
+}
+const tip = $('#tip'), stage = $('#stage');
+function place(el, ev, pad=16){
+  const sr = stage.getBoundingClientRect();
+  el.style.display='block';
+  const w = el.offsetWidth, h = el.offsetHeight;
+  let x = ev.clientX - sr.left + pad, y = ev.clientY - sr.top + pad;
+  if (x+w > sr.width-8) x = ev.clientX - sr.left - w - pad;
+  if (y+h > sr.height-8) y = ev.clientY - sr.top - h - pad;
+  el.style.left = clamp(x,8,Math.max(8,sr.width-w-8))+'px'; el.style.top = clamp(y,8,Math.max(8,sr.height-h-8))+'px';
+}
+$('#hw').addEventListener('pointermove',e=>{
+  if (drag) return;
+  const f = findComp(e.target);
+  if (!f || !detail(f.c,T()).rows.length || (S.pinned===f.c.id)){ tip.style.display='none'; return; }
+  const d = detail(f.c,T(),f.role);
+  tip.innerHTML = `<h3>${esc(d.title)}</h3><div class="conf">${esc(d.conf||'')}</div>${rowsHtml(d.rows)}${d.note?`<div class="note">${esc(d.note)}</div>`:''}<div class="note" style="margin-top:6px;color:var(--faint)">Click to pin details</div>`;
+  place(tip,e);
+});
+$('#hw').addEventListener('pointerleave',()=>{ tip.style.display='none'; });
+let pinEv = null;
+$('#hw').addEventListener('click',e=>{
+  if (e.target.closest('[data-slider],[data-auto],[data-helper]')) return;
+  const f = findComp(e.target);
+  if (!f || !detail(f.c,T()).rows.length){ S.pinned=null; S.pinRole=null; render(); return; }
+  S.pinned = f.c.id; S.pinRole = f.role||null; pinEv = e; tip.style.display='none'; render(); placePin(e);
+});
+$('#hw').addEventListener('keydown',e=>{ if (e.key==='Enter' || e.key===' '){ const f=findComp(e.target); if (f){ e.preventDefault(); const r=e.target.getBoundingClientRect(); S.pinned=f.c.id; S.pinRole=f.role||null; pinEv={clientX:r.left+r.width/2,clientY:r.top+r.height/2}; render(); placePin(pinEv);} } if (e.key==='Escape'){ S.pinned=null; render(); } });
+function showPin(){
+  const c = LAYOUTS[S.layout].comps.find(x=>x.id===S.pinned); if (!c){ S.pinned=null; return; }
+  const t = T(), d = detail(c,t,S.pinRole);
+  let spark_ = '';
+  if (d.series){
+    const v = d.series.vals.filter(a=>a!=null), hi = Math.max(...v), lo = Math.min(...v), last = v[v.length-1];
+    const fmtv = n => d.series.rate ? rate(n) : (d.series.fmt===0 ? fmt(n,0) : fmt(n, (Math.abs(n)<10)?2:1)) + (d.series.unit||'');
+    spark_ = `<svg viewBox="0 0 300 70" preserveAspectRatio="none">${spark(4,6,292,56,d.series.vals,d.series.color,{grid:true,sw:1.8,min:d.series.unit===' %'?0:undefined,max:d.series.unit===' %'?100:undefined})}</svg>
+    <div class="cap">${esc(d.series.name)} · now ${esc(fmtv(last))} · range ${esc(fmtv(lo))} – ${esc(fmtv(hi))} <span class="tag ex">SAMPLE</span></div>`;
+  }
+  $('#pin').innerHTML = `<button class="x" aria-label="Close detail" id="pinX">✕</button><h3>${esc(d.title)}</h3><div class="conf">${esc(d.conf||'')}</div>${rowsHtml(d.rows)}${spark_}${d.note?`<div class="note">${esc(d.note)}</div>`:''}`;
+  $('#pin').style.display='block';
+  $('#pinX').onclick = () => { S.pinned=null; render(); };
+}
+function placePin(e){ if (S.pinned) place($('#pin'),e,18); }
+
+/* ---------- fan slider drag ---------- */
+let drag = null;
+function svgPoint(e){ const svg=$('#hw'), p=svg.createSVGPoint(); p.x=e.clientX; p.y=e.clientY; return p.matrixTransform(svg.getScreenCTM().inverse()); }
+$('#hw').addEventListener('pointerdown',e=>{
+  const g = e.target.closest('[data-slider]');
+  if (g){ drag = {idx:+g.dataset.slider,sx:+g.dataset.sx,sw:+g.dataset.sw,min:+g.dataset.min,max:+g.dataset.max}; $('#hw').setPointerCapture(e.pointerId); tip.style.display='none'; moveDrag(e); return; }
+  const a = e.target.closest('[data-auto]');
+  if (a){ delete S.manual[+a.dataset.auto]; render(); e.stopPropagation(); return; }
+  if (e.target.closest('[data-helper]')){ S.helper=true; $('#helperTog').setAttribute('aria-pressed','true'); $('#helperTog').textContent='Fan helper installed'; render(); }
+});
+function moveDrag(e){ const p = svgPoint(e); const k = clamp((p.x-drag.sx)/drag.sw,0,1); S.manual[drag.idx] = Math.round(drag.min + k*(drag.max-drag.min)); render(); }
+$('#hw').addEventListener('pointermove',e=>{ if (drag) moveDrag(e); });
+$('#hw').addEventListener('pointerup',()=>{ drag=null; });
+
+/* ---------- controls ---------- */
+function seg(id,items,key,after){
+  const el = $(id);
+  el.innerHTML = items.map(([v,l])=>`<button data-v="${v}" aria-pressed="${S[key]===v}">${esc(l)}</button>`).join('');
+  el.onclick = e => { const b=e.target.closest('button'); if(!b) return; S[key]=b.dataset.v; S.pinned=null; S.manual={}; seg(id,items,key,after); render(); renderNotes(); };
+}
+seg('#layoutSeg',Object.entries(LAYOUTS).map(([k,v])=>[k,v.label]),'layout');
+seg('#scenSeg',[['now','This Mac, right now'],['load','Under load (illustrative)']],'scen');
+$('#helperTog').onclick = e => { S.helper=!S.helper; e.currentTarget.setAttribute('aria-pressed',S.helper); e.currentTarget.textContent = S.helper?'Fan helper installed':'Fan helper not installed'; render(); };
+$('#narrowTog').onclick = e => { S.forceNarrow=!S.forceNarrow; e.currentTarget.setAttribute('aria-pressed',S.forceNarrow); $('#win').classList.toggle('narrow-preview',S.forceNarrow); };
+$('#chips').onclick = e => { const b=e.target.closest('button'); if(!b) return; S.focusId=b.dataset.focus; buildChips(); applyView(true); };
+document.addEventListener('click',e=>{ if (S.pinned && !e.target.closest('#win')){ S.pinned=null; render(); } });
+
+/* ---------- design notes (outside the app window) ---------- */
+function renderNotes(){
+  const L = LAYOUTS[S.layout];
+  const layoutNote = {
+    mbpPhoto:['The photo is a real, public-domain (CC0) teardown of an Intel-based 16″ MacBook Pro from 2019. Its chassis, two fans, long heat pipe, speakers and six-cell battery match the family, but its logic board is not an Apple silicon board.','So the fans, heat pipe and batteries sit on real parts. Memory (one module each side of the chip) and storage (two chips low on the board) are dashed and placed from a real Apple silicon 14″ photo used only as a private reference. Medium confidence: that photo is small.','The real fan shows while parked. When a fan spins, flat blades drawn for this mockup turn over it at a scaled speed, so no photo perspective or glare moves with them.','For the real feature each model needs its own photo, taken or licensed for this use. No free Apple silicon teardown photo exists on Wikimedia Commons, and iFixit reserves all rights.','Readings sit on dark glass plates so the busy photo never hurts legibility. Anything secondary appears on hover.'],
+    mbpPro:['Two fans and one long heat pipe running fan to fan across the chip (verified, iFixit and Notebookcheck).','Six cells in three strips, four outer and two under the trackpad (verified).','Wi-Fi/BT module on the rear of the board is verified; its exact spot and the antenna band are drawn approximate.','Which half of the pipe is CPU or GPU follows the chip’s die layout and is inferred. Worth checking against die shots before build.'],
+    mbpBase:['Base chips have one fan and a pipe about half as long (iFixit M3 teardown; base M4 inferred from it).','Fan side is inferred. Everything else shares the Pro layout.','The real build picks this layout from model plus chip tier, then checks the fan count against what the SMC reports. A real reading always overrides the drawing.'],
+    neo:['Fanless: a passive spreader instead of a pipe, and no fan sliders.','Two cells in one tray. The 8 GB of memory is stacked on the chip, so it shares the chip’s package.','Charges over USB-C, no MagSafe. Antenna positions and the headphone jack side are unknown, so they are not drawn.','All values here are sample numbers, not read from a Neo.'],
+    mini:['One central fan, a bare power supply across the rear, a one-screw SSD module (position differs on M4 Pro) and the bottom plate acting as an antenna.','No battery and no display, so those components simply do not exist in this layout.','M1 and M2 minis have different internals and would get their own layout.'],
+    generic:['If Anode does not know a model it draws a plainly labelled schematic instead of guessing a real layout.','Real readings still show: the fan count here comes from the SMC, not from the drawing.','Every region is dashed because none of the positions are known.']
+  }[S.layout];
+  $('#notes').innerHTML = `
+  <section><h2>${esc(L.label)}</h2><ul>${layoutNote.map(n=>`<li>${esc(n)}</li>`).join('')}</ul></section>
+  <section><h2>Where each reading lives</h2><ul>
+    <li><b>Fans</b>: speed in the hub, slider underneath.</li>
+    <li><b>Heat pipe</b>: CPU and GPU temperature, one on each half.</li>
+    <li><b>Memory</b>: on the chip’s package, with Apple’s pressure colour and what the memory holds.</li>
+    <li><b>Storage</b>: on the NAND, with capacity, activity and the drive’s own health.</li>
+    <li><b>Battery</b>: charge, temperature, rate, 24 h graph, system draw and health on separate cells.</li>
+    <li><b>Power in</b>: at the port. <b>System draw</b>: on the pack. Never merged.</li>
+    <li><b>Display</b>: power, brightness and a graph on the screen itself.</li>
+  </ul></section>
+  <section><h2>Calls I made that you should check</h2><ul>
+    <li>Fan blades turn only while this window is visible, at a capped speed that is scaled, not literal. They stop at 0 rpm and respect Reduce Motion.</li>
+    <li>Fan sliders need the root helper. Without it they become a quiet install prompt.</li>
+    <li>Macs give one reading for the whole battery pack, not per cell. I put each pack reading on a real cell and say so in the detail.</li>
+    <li>No Wi-Fi signal strength, no display temperature and no per-core load: macOS does not expose them, so they are absent rather than invented.</li>
+    <li>Temperature, fan and display graphs only fill while the window is open. Only battery history exists on disk.</li>
+    <li>Memory numbers here come from <span class="mono">vm_stat</span>. Anode’s own “RAM 78 %” counts differently, which I will reconcile before build.</li>
+    <li>Ideas parked: lid angle at the hinge (costly to poll), palm-rest temperature (verified on one Mac only), per-port USB power (estimate).</li>
+  </ul></section>`;
+}
+/* the photo is parsed once, outside the part of the SVG that re-renders */
+$('#sdefs').innerHTML = `<image id="ph" href="${PHOTO_URI}" x="${PH.x}" y="${PH.y}" width="1020" height="${PH.h}" preserveAspectRatio="none"/>
+  <radialGradient id="fanShine" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff" stop-opacity=".10"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient><clipPath id="photoClip"><rect x="40" y="${PH.y}" width="1020" height="${PH.h}" rx="26"/></clipPath>
+  <clipPath id="scrClip"><rect x="58" y="26" width="984" height="398" rx="10"/></clipPath>
+  <linearGradient id="wpBase" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0a1030"/><stop offset=".55" stop-color="#16256a"/><stop offset="1" stop-color="#34196b"/></linearGradient>
+  <linearGradient id="wpRib" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7fd6ff" stop-opacity="0"/><stop offset=".45" stop-color="#9fb4ff" stop-opacity=".55"/><stop offset="1" stop-color="#ff8ad0" stop-opacity=".1"/></linearGradient>
+  <radialGradient id="wpA"><stop offset="0" stop-color="#2f7dff" stop-opacity=".85"/><stop offset="1" stop-color="#2f7dff" stop-opacity="0"/></radialGradient>
+  <radialGradient id="wpB"><stop offset="0" stop-color="#a24bff" stop-opacity=".75"/><stop offset="1" stop-color="#a24bff" stop-opacity="0"/></radialGradient>
+  <radialGradient id="wpC"><stop offset="0" stop-color="#00c8d6" stop-opacity=".5"/><stop offset="1" stop-color="#00c8d6" stop-opacity="0"/></radialGradient>
+  <radialGradient id="wpD"><stop offset="0" stop-color="#ff5fa8" stop-opacity=".55"/><stop offset="1" stop-color="#ff5fa8" stop-opacity="0"/></radialGradient>
+  <g id="wallpaper"><rect x="58" y="26" width="984" height="398" fill="url(#wpBase)"/>
+    <ellipse cx="170" cy="400" rx="380" ry="220" fill="url(#wpA)"/><ellipse cx="760" cy="90" rx="420" ry="190" fill="url(#wpB)"/>
+    <ellipse cx="520" cy="330" rx="320" ry="140" fill="url(#wpC)"/><ellipse cx="980" cy="360" rx="280" ry="180" fill="url(#wpD)"/>
+    <g fill="none" stroke="url(#wpRib)" stroke-linecap="round"><path d="M40 330 C 260 190, 430 410, 640 250 S 960 120, 1060 210" stroke-width="64" opacity=".4"/><path d="M40 410 C 300 300, 480 470, 700 340 S 990 250, 1070 320" stroke-width="36" opacity=".35"/></g>
+  </g>`;
+render(); renderNotes(); checkNarrow();
+</script>
