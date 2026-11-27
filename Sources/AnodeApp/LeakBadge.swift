@@ -30,10 +30,12 @@ enum LeakBadge {
         MemoryWatchController.current?.open(windowKey: finding.windowKey)
     }
 
-    /// Whether the flagged process is still running: the pid is read and its start time must be the flagged one, so a pid
-    /// the system has handed to another process does not count. One cheap call.
+    /// Whether the flagged process still deserves the badge: it is still running (the pid is read and its start time must
+    /// be the flagged one, so a pid the system has handed to another process does not count) and its memory has not fallen
+    /// back (`Finding.hasRecovered`: a leak that goes back down was not one). One cheap call.
     static var isAlive: (Finding) -> Bool = { finding in
-        ProcessSampler.footprint(of: finding.pid)?.start == finding.processKey.startAbsTime
+        guard let now = ProcessSampler.footprint(of: finding.pid), now.start == finding.processKey.startAbsTime else { return false }
+        return !finding.hasRecovered(currentBytes: now.footprint)
     }
 
     // ── Matching ────────────────────────────────────────────────────────────

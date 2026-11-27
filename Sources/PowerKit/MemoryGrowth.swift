@@ -531,6 +531,14 @@ public struct Finding: Equatable {
         windowSeconds > 0 ? Double(netGrowthBytes) / windowSeconds : 0
     }
 
+    /// A leak finding is withdrawn when the memory falls back: at or below the start plus half of the growth that was
+    /// flagged. A leak keeps what it took; memory that goes back down was work that finished or memory the app gave back.
+    /// False for a low-memory warning (it is about the whole Mac) and when there was no growth to give back.
+    public func hasRecovered(currentBytes: UInt64) -> Bool {
+        guard tier != .pressure, netGrowthBytes > 0 else { return false }
+        return currentBytes <= startBytes + netGrowthBytes / 2
+    }
+
     /// Growth as a fraction of where the window started (0.29 for +29%).
     public var growthFraction: Double {
         startBytes > 0 ? Double(netGrowthBytes) / Double(startBytes) : 0
@@ -594,11 +602,16 @@ public struct Finding: Equatable {
         switch reason {
         case .critical?: return "Your Mac is critically low on memory"
         case .warning?: return "Your Mac is low on memory"
+        case .memoryLow?: return "Your Mac is low on memory: \(leftText) left"
+        case .memoryCritical?: return "Your Mac is almost out of memory: \(leftText) left"
         case .swap?: return "Your Mac is using a lot of swap"
         case .oneAppDominates?: return "\(name) is using over half of your memory"
         case nil: return "Your Mac is running low on memory"
         }
     }
+
+    /// The RAM not in use, "2.1 GB" (or "less than 1 GB"-style "512 MB").
+    private var leftText: String { MemorySizeText.text(system?.leftBytes ?? 0) }
 
     /// "38 GB of 64 GB" when the total is known, else just "38 GB".
     private var appShare: String {
@@ -624,6 +637,8 @@ public struct Finding: Equatable {
         switch reason {
         case .critical?: parts.append("macOS reports critical memory pressure.")
         case .warning?: parts.append("macOS has reported memory pressure for a while.")
+        case .memoryLow?: parts.append("Only \(leftText) of memory is left, so the Mac will soon have to compress and swap hard, which slows everything down.")
+        case .memoryCritical?: parts.append("Only \(leftText) of memory is left. The Mac is about to stall, and macOS may start closing apps. Anode repeats this alert every two minutes until memory is freed.")
         case .swap?: parts.append("Swap use has stayed high, which slows the Mac down.")
         case .oneAppDominates?: parts.append("One app has held more than half of the memory for several minutes.")
         case nil: break

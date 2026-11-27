@@ -444,7 +444,7 @@ final class MemoryWatchControllerTests: XCTestCase {
         XCTAssertEqual(r.windowKeys, ["/Applications/Chrome.app"])
         XCTAssertEqual(r.latest?.pinned, [ProcessKey(pid: 2, startAbsTime: 1)])
 
-        for pid in 10...25 { r.controller.handle(finding: makePressureFinding("node", app: false, pid: pid_t(pid))) }
+        for pid in 10...25 { r.controller.handle(finding: makeLeakFinding("node", app: false, pid: pid_t(pid))) }
         XCTAssertEqual(r.controller.findings.count, MemoryWatchController.maxFindings)
     }
 
@@ -581,6 +581,44 @@ final class MemoryWatchControllerTests: XCTestCase {
         r.controller.handle(finding: finding)
         r.controller.livePointArrived(finding.processKey, MemorySample(seconds: 1, bytes: 1))
         XCTAssertTrue(r.windows.isEmpty, "no window is opened by a point, and there is none to receive it")
+    }
+
+    /// The two-minute critical repeats keep one row: they must not push a real leak out of the list (ten rows), which would
+    /// also take its badge in the Processes table.
+    func testRepeatedLowMemoryWarningsKeepOneRowAndLeaveTheLeaksListed() throws {
+        let r = try rig(enabled: true, pressure: true)
+        let leak = makeLeakFinding()
+        r.controller.handle(finding: leak)
+        for i in 0..<12 {
+            r.controller.handle(finding: makePressureFinding(at: Date(timeIntervalSince1970: 1_000_100 + Double(i) * 120)))
+        }
+        XCTAssertEqual(r.controller.findings.count, 2)
+        XCTAssertEqual(r.controller.findings.map(\.tier), [.pressure, leak.tier], "newest first, the leak still there")
+        XCTAssertEqual(r.controller.findings.first?.flaggedAtWall, Date(timeIntervalSince1970: 1_000_100 + 11 * 120))
+    }
+
+    /// An app's leak and a low-memory warning naming the same app share one notification, so withdrawing the leak must not
+    /// take the warning's banner with it.
+    func testAWithdrawnLeakLeavesANewerLowMemoryBannerAlone() throws {
+        let r = try rig(enabled: true, pressure: true)
+        let leak = makeLeakFinding("Chrome")
+        r.controller.handle(finding: leak)
+        r.controller.handle(finding: makePressureFinding("Chrome"))
+        r.controller.livePointArrived(leak.processKey, MemorySample(seconds: 1, bytes: 220 << 20))
+        XCTAssertTrue(r.notifier.removedKeys.isEmpty)
+    }
+
+    /// The leak's memory came back down (start 200 MiB, flagged at +100 MiB, so 250 MiB or less is "gave it back"): its banner
+    /// is taken away once, and a point that is still high leaves it alone.
+    func testALeakThatFallsBackHasItsBannerWithdrawnOnce() throws {
+        let r = try rig(enabled: true)
+        let finding = makeLeakFinding()
+        r.controller.handle(finding: finding)
+        r.controller.livePointArrived(finding.processKey, MemorySample(seconds: 1, bytes: 290 << 20))
+        XCTAssertTrue(r.notifier.removedKeys.isEmpty, "still high: the banner stays")
+        r.controller.livePointArrived(finding.processKey, MemorySample(seconds: 2, bytes: 220 << 20))
+        r.controller.livePointArrived(finding.processKey, MemorySample(seconds: 3, bytes: 210 << 20))
+        XCTAssertEqual(r.notifier.removedKeys, [finding.windowKey], "taken back once, not at every point")
     }
 
     func testANewerFindingOfTheSameAppUpdatesItsWindowAndFollowsTheNewProcess() throws {

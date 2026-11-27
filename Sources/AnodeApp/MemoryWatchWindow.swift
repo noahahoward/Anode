@@ -25,6 +25,10 @@ struct MemoryWatchWindowModel {
     static let pressureWhyHeading = "Why Anode warned you"
     static let pressureWindowTitle = "Memory Is Running Low"
     static let leakWindowTitle = "Possible Memory Leak"
+    /// What a leak's window says once the memory has come back down (`recovered`).
+    static let recoveredHeading = "Memory came back down"
+    static let recoveredWhyHeading = "What Anode saw"
+    static let recoveredWindowTitle = "Memory Came Back Down"
     static let historyUnavailableText = "History isn't available after Anode restarted."
 
     let finding: Finding
@@ -47,9 +51,12 @@ struct MemoryWatchWindowModel {
 
     /// A low-memory warning, not a leak: the numbers, the graph's title and the words around them differ.
     var isPressure: Bool { finding.tier == .pressure }
-    var headingText: String { isPressure ? Self.pressureHeading : Self.heading }
-    var whyHeadingText: String { isPressure ? Self.pressureWhyHeading : Self.whyHeading }
-    var windowTitle: String { isPressure ? Self.pressureWindowTitle : Self.leakWindowTitle }
+    /// A leak that is no longer one: its memory has fallen back to under the start plus half of what was flagged. Follows the
+    /// newest point, so a window left open changes its words by itself.
+    var recovered: Bool { finding.hasRecovered(currentBytes: nowBytes) }
+    var headingText: String { isPressure ? Self.pressureHeading : (recovered ? Self.recoveredHeading : Self.heading) }
+    var whyHeadingText: String { isPressure ? Self.pressureWhyHeading : (recovered ? Self.recoveredWhyHeading : Self.whyHeading) }
+    var windowTitle: String { isPressure ? Self.pressureWindowTitle : (recovered ? Self.recoveredWindowTitle : Self.leakWindowTitle) }
 
     /// The app's name; a low-memory warning that found no app to name is about the Mac as a whole.
     var title: String { finding.name.isEmpty && isPressure ? "Your Mac" : finding.name }
@@ -161,7 +168,12 @@ struct MemoryWatchWindowModel {
 
     // MARK: Explanation
 
-    var explanation: String { finding.explanation }
+    var explanation: String {
+        guard recovered else { return finding.explanation }
+        return "Its memory grew \(MetricUnit.bytes.format(Double(finding.netGrowthBytes))) and has since fallen back to "
+            + "\(nowText). A leak keeps what it takes, so this is probably not a leak: work that finished, or memory the app "
+            + "gave back. Anode only reads memory sizes, and will not flag this process again."
+    }
 
     /// A low-memory warning only: what Quit does to the work in the app. (A leak's window does not have this line.)
     var explanationHint: String? {
@@ -503,7 +515,7 @@ final class MemoryWatchWindowController: NSWindowController, NSWindowDelegate, M
         titleLabel.stringValue = model.title
         titleLabel.textColor = Palette.text
         badgeLabel.stringValue = model.headingText
-        badgeLabel.textColor = Palette.warn
+        badgeLabel.textColor = model.recovered ? Palette.dim : Palette.warn
         if window?.title != model.windowTitle { window?.title = model.windowTitle }
         detailLabel.stringValue = model.detailLine
         detailLabel.textColor = Palette.faint

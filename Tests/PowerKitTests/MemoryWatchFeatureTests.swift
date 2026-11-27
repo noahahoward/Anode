@@ -110,8 +110,8 @@ final class MemoryWatchFeatureTests: XCTestCase {
         let r = try rig()
         let text = r.feature.pressureLabel.stringValue
         XCTAssertEqual(text, MemoryWatchFeature.pressureSummary)
-        for phrase in ["how full the Mac's memory is", "high memory pressure", "orange", "red",
-                       "naming the biggest app", "never quits anything by itself", "reads memory sizes only",
+        for phrase in ["how much of the Mac's memory is left", "2.5 GB or less", "0.5 GB or less", "repeats",
+                       "Alerts", "naming the biggest app", "never quits anything by itself", "reads memory sizes only",
                        "no administrator privileges", "runs no commands", "one small system reading",
                        "permission to show notifications"] {
             XCTAssertTrue(text.contains(phrase), "the summary says \"\(phrase)\"")
@@ -186,14 +186,14 @@ final class MemoryWatchFeatureTests: XCTestCase {
     func testTheListShowsBothKindsAndSaysWhichIsLow() throws {
         let r = try rig(enabled: true, pressure: true)
         r.controller.handle(finding: makeLeakFinding("Safari", pid: 1))
+        r.controller.handle(finding: makeLeakFinding("node", app: false, pid: 77, start: 4))
         r.controller.handle(finding: makePressureFinding("Chrome", pid: 2))
-        r.controller.handle(finding: makePressureFinding("node", app: false, pid: 77, start: 4))
         r.feature.refresh()
         XCTAssertEqual(MemoryWatchFeature.rowTitles(of: r.feature.findingsStack),
-                       ["node (process 77), memory low, 2 min ago", "Chrome, memory low, 2 min ago", "Safari, 2 min ago"])
+                       ["Chrome, memory low, 2 min ago", "node (process 77), 2 min ago", "Safari, 2 min ago"])
         let buttons = MemoryWatchFeature.rowButtons(of: r.feature.findingsStack)
         XCTAssertEqual(buttons.map(\.title), ["Open", "Open", "Open"])
-        buttons[1].performClick(nil)
+        buttons[0].performClick(nil)
         XCTAssertEqual(r.controller.openWindowKeys, ["/Applications/Chrome.app"], "the window of the low-memory finding")
     }
 

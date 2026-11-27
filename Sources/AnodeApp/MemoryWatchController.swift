@@ -233,6 +233,10 @@ final class MemoryWatchController {
         // ... or after the box for this kind of finding was unticked while the other stays on.
         let kindIsOn = finding.tier == .pressure ? modes.pressure : modes.leaks
         guard kindIsOn else { return }
+        withdrawn.remove(finding.windowKey)     // a fresh finding for the key is a new story
+        // One low-memory row: a repeat, or the critical alert after the warning, replaces it. Added each time, the two-minute
+        // repeats would push real leak findings out of the list, and their badge in the Processes table with them.
+        if finding.tier == .pressure { findings.removeAll { $0.tier == .pressure } }
         findings.insert(finding, at: 0)
         if findings.count > Self.maxFindings { findings.removeLast(findings.count - Self.maxFindings) }
         adopt(finding)
@@ -332,7 +336,16 @@ final class MemoryWatchController {
         for entry in windows.values where entry.processKeys.contains(key) {
             entry.window.appendLive(sample)
         }
+        // A leak whose memory has come back down is withdrawn: its banner goes (once), not left to say "leak".
+        for finding in findings where finding.processKey == key && finding.hasRecovered(currentBytes: sample.bytes) {
+            // An app's leak and a low-memory warning naming it share one notification: leave a newer warning's banner alone.
+            guard findings.first(where: { $0.windowKey == finding.windowKey })?.tier != .pressure else { continue }
+            if withdrawn.insert(finding.windowKey).inserted { notifier.removeDelivered(forKey: finding.windowKey) }
+        }
     }
+
+    /// Window keys whose banner was taken back because the memory fell (so it is done once, not at every point).
+    private var withdrawn: Set<String> = []
 
     // ── The ignore list ─────────────────────────────────────────────────────
 

@@ -4,7 +4,8 @@ import Foundation
 // Memory Watch, the high-memory warning: a late safety net beside the leak tiers.
 //
 // The leak tiers ask "is this process growing?". This part asks "is the Mac running out of memory, whoever is to blame?":
-// the kernel says memory pressure has been up for a while, or swap has grown large, or one app holds half of the RAM. Like
+// little RAM is left (`PressureRules.standard`: 2.5 GB or less warns, 0.5 GB or less is critical and repeats). The rules that
+// follow the kernel's pressure level, swap use and one app holding half of the RAM are kept, off by default. Like
 // `MemoryGrowth.swift` the decision is pure: numbers in, a verdict out, no clock, no disk, no process spawned. The one
 // reading it needs is `SystemMemoryReader.read()`, which is two unprivileged system calls (the same ones Activity Monitor's
 // memory figures come from) and nothing else.
@@ -26,6 +27,9 @@ public struct SystemMemoryReading: Equatable {
         self.swapUsedBytes = swapUsedBytes
         self.pressureLevel = pressureLevel
     }
+
+    /// RAM not in use: what is left before the Mac has to compress and swap hard (0 when over, or unknown).
+    public var leftBytes: UInt64 { totalBytes > usedBytes ? totalBytes - usedBytes : 0 }
 
     /// Memory in use as a percentage of RAM (0 when the total is unknown).
     public var usedPercent: Double {
@@ -59,11 +63,28 @@ public enum SystemMemoryReader {
 /// Every threshold the high-memory warning decides by, in one place. Starting values, tuned against real use.
 public struct PressureRules: Equatable {
 
-    /// The kernel's pressure level at warning (2, the orange of Activity Monitor's graph) or above, held this long. Two
-    /// minutes: a build or a test run pushes the level up for a minute and lets it fall, and nobody needs telling.
-    public var warningSeconds: Double = 120
-    /// The kernel's pressure level at critical (4), held this long.
-    public var criticalSeconds: Double = 15
+    /// Whether the warning follows how much memory is LEFT (`warningLeftBytes`, `criticalLeftBytes`) instead of macOS's
+    /// pressure level. On by default: a Mac can sit at orange for a long time with gigabytes still free, and the person wants
+    /// to hear when the RAM itself is nearly gone. Off: the level rules below (`.everything`, kept tested).
+    public var watchesMemoryLeft: Bool = true
+    /// Warn once no more than this much RAM is left (RAM minus Activity Monitor's "Memory Used"): 2.5 GB.
+    public var warningLeftBytes: UInt64 = 5 << 29
+    /// Critical once no more than this much is left: 0.5 GB.
+    public var criticalLeftBytes: UInt64 = 1 << 29
+    /// On a small Mac those lines are capped at this share of the RAM (an 8 GB Mac sits at 5.5 GB used all day, so 2.5 GB
+    /// left would be its normal): a quarter for the warning, a twentieth for the critical alert. A 24 GB Mac keeps 2.5 / 0.5.
+    public var warningLeftMaxShare: Double = 0.25
+    public var criticalLeftMaxShare: Double = 0.05
+    /// A critical alert is sent again this often for as long as the memory stays that low (the person asked for it to keep
+    /// asking). Nil: once, then quiet until the machine has been calm.
+    public var criticalRepeatSeconds: Double? = 120
+
+    /// The kernel's pressure level at warning (2, the orange of Activity Monitor's graph) or above, held this long; with
+    /// `watchesMemoryLeft`, the memory left at or under the warning line, held this long. Short, so a moment of loading does
+    /// not warn.
+    public var warningSeconds: Double = 30
+    /// The kernel's pressure level at critical (4), or the memory left at or under the critical line, held this long.
+    public var criticalSeconds: Double = 10
 
     /// Swap in use at or above `max(swapMinBytes, swapFractionOfRAM x RAM)`, held `swapSeconds`. Both numbers must be
     /// passed: a 64 GB Mac with 3 GB of swap is fine, and so is an 8 GB Mac with 1.5 GB.
@@ -71,18 +92,18 @@ public struct PressureRules: Equatable {
     public var swapMinBytes: UInt64 = 4 << 30
     public var swapSeconds: Double = 120
     /// Whether swap use raises an alert of its own. OFF by default: macOS leaves swap files in use long after pressure has
-    /// gone, so a Mac that is running well can show gigabytes of swap, and the warning must follow the pressure level.
+    /// gone, so a Mac that is running well can show gigabytes of swap, and the warning must follow the memory left.
     public var watchesSwap: Bool = false
 
     /// The single largest app at or above this share of physical RAM, held `dominantSeconds`.
     public var dominantShareOfRAM: Double = 0.50
     public var dominantSeconds: Double = 300
     /// Whether one app holding a large share of the RAM raises an alert of its own. OFF by default for the same reason:
-    /// the warning follows the pressure level (orange, then red), and a slow leak is the leak detector's to find.
+    /// the warning follows the memory left, and a slow leak is the leak detector's to find.
     public var watchesDominantApp: Bool = false
 
-    /// After a warning or a critical alert, the same level may not fire again until pressure has been back to normal AND
-    /// no other rule has been true for this long.
+    /// After a warning or a critical alert, the same level may not fire again until the machine has been calm (no rule true)
+    /// for this long. A critical alert with `criticalRepeatSeconds` repeats on that interval instead of waiting.
     public var rearmSeconds: Double = 180
     /// The shortest gap between two alerts of the same level. A critical alert is not held back by a warning's cooldown.
     public var warningCooldownSeconds: Double = 1800
@@ -100,14 +121,35 @@ public struct PressureRules: Equatable {
     /// Pressure only: orange (level 2) held two minutes is the warning, red (level 4) held 15 seconds is the critical one.
     public static let standard = PressureRules()
 
+    /// The pressure-graph rules (orange held two minutes warns, red held 15 seconds is critical, no repeats). Kept so those
+    /// rules stay tested; nothing uses them by default.
+    public static var pressureLevel: PressureRules {
+        var r = PressureRules()
+        r.watchesMemoryLeft = false
+        r.warningSeconds = 120
+        r.criticalSeconds = 15
+        r.criticalRepeatSeconds = nil
+        return r
+    }
+
     /// The first version's rules: a warning after one minute, and swap and one big app as triggers of their own. Kept so
     /// those rules stay tested and can be switched on again; nothing uses them by default.
     public static var everything: PressureRules {
-        var r = PressureRules()
+        var r = PressureRules.pressureLevel
         r.warningSeconds = 60
         r.watchesSwap = true
         r.watchesDominantApp = true
         return r
+    }
+
+    /// The memory left at which the warning fires, on a Mac with this much RAM.
+    public func warningLeft(totalBytes: UInt64) -> UInt64 {
+        min(warningLeftBytes, UInt64(max(0, warningLeftMaxShare * Double(totalBytes))))
+    }
+
+    /// The memory left at which the critical alert fires, on a Mac with this much RAM.
+    public func criticalLeft(totalBytes: UInt64) -> UInt64 {
+        min(criticalLeftBytes, UInt64(max(0, criticalLeftMaxShare * Double(totalBytes))))
     }
 
     /// The swap level the swap rule needs on a Mac with this much RAM.
@@ -117,12 +159,16 @@ public struct PressureRules: Equatable {
 }
 
 /// Why the high-memory warning fired. When several are true at once the highest wins:
-/// `critical` > `warning` > `swap` > `oneAppDominates`.
+/// `memoryCritical` / `critical` > `memoryLow` / `warning` > `swap` > `oneAppDominates`.
 public enum PressureReason: Equatable {
     /// The kernel reports critical memory pressure.
     case critical
     /// The kernel reports memory pressure (warning or worse).
     case warning
+    /// Little RAM is left (2.5 GB or less on a big enough Mac).
+    case memoryLow
+    /// Almost no RAM is left (0.5 GB or less on a big enough Mac).
+    case memoryCritical
     /// A lot of swap is in use.
     case swap
     /// One app holds half of the RAM or more.
@@ -163,9 +209,11 @@ public struct PressureVerdict: Equatable {
 /// reaches a 60 s rule. A verdict is returned only on the reading that makes a rule sustained, and only when the level it
 /// belongs to may fire:
 ///
-/// - Two levels exist. CRITICAL is the critical reason. WARNING is the warning, swap and one-app-dominates reasons.
+/// - Two levels exist. CRITICAL is the critical (or memory-critical) reason. WARNING is the warning (or memory-low), swap and
+///   one-app-dominates reasons.
 /// - A level fires at most once per cooldown (`criticalCooldownSeconds`, `warningCooldownSeconds`), and after it fires it
-///   stays quiet until the machine has been calm (pressure normal, swap and one-app rules false) for `rearmSeconds`.
+///   stays quiet until the machine has been calm (no rule true) for `rearmSeconds`. With `criticalRepeatSeconds` set (the
+///   default rules) the critical level instead fires again on that interval for as long as it stays true.
 /// - A critical alert may fire while the warning level is cooling down (things got worse), and it also uses up the warning
 ///   level (a warning straight after a critical alert would say less than what was just said).
 /// - A warning-level alert does not fire while a critical alert is cooling down.
@@ -177,7 +225,7 @@ public struct PressureTracker: Equatable {
     private var warningSince: Double?
     private var swapSince: Double?
     private var dominantSince: Double?
-    /// When the machine became calm (pressure normal and neither swap nor one-app rule true).
+    /// When the machine became calm (neither the warning rule nor the swap or one-app rule true).
     private var calmSince: Double?
     private var lastCriticalAt: Double?
     private var lastWarningAt: Double?
@@ -219,8 +267,15 @@ public struct PressureTracker: Equatable {
         lastT = t
 
         let level = reading.pressureLevel ?? 1
-        let critical = level >= 4
-        let warning = level >= 2
+        let critical: Bool
+        let warning: Bool
+        if rules.watchesMemoryLeft, reading.totalBytes > 0 {
+            critical = reading.leftBytes <= rules.criticalLeft(totalBytes: reading.totalBytes)
+            warning = reading.leftBytes <= rules.warningLeft(totalBytes: reading.totalBytes)
+        } else {
+            critical = level >= 4
+            warning = level >= 2
+        }
         let swap = rules.watchesSwap && reading.swapUsedBytes >= rules.swapThreshold(totalBytes: reading.totalBytes)
         let dominant = rules.watchesDominantApp && reading.totalBytes > 0
             && topAppBytes >= UInt64(max(0, rules.dominantShareOfRAM * Double(reading.totalBytes)))
@@ -240,11 +295,15 @@ public struct PressureTracker: Equatable {
 
         let criticalCooling = Self.cooling(lastCriticalAt, rules.criticalCooldownSeconds, t)
 
-        if let s = criticalSince, t - s >= rules.criticalSeconds, !criticalNeedsRearm, !criticalCooling {
+        // With a repeat interval the critical alert is not held back by the re-arm flag: the cooldown is the interval.
+        let repeating = rules.criticalRepeatSeconds != nil
+        let criticalInterval = rules.criticalRepeatSeconds ?? rules.criticalCooldownSeconds
+        let criticalDue = Self.cooling(lastCriticalAt, criticalInterval, t) == false
+        if let s = criticalSince, t - s >= rules.criticalSeconds, repeating ? criticalDue : (!criticalNeedsRearm && !criticalCooling) {
             lastCriticalAt = t
             criticalNeedsRearm = true
             warningNeedsRearm = true
-            return PressureVerdict(reason: .critical, reading: reading, topAppBytes: topAppBytes, sustainedSeconds: t - s)
+            return PressureVerdict(reason: rules.watchesMemoryLeft ? .memoryCritical : .critical, reading: reading, topAppBytes: topAppBytes, sustainedSeconds: t - s)
         }
 
         guard !warningNeedsRearm, !criticalCooling, !Self.cooling(lastWarningAt, rules.warningCooldownSeconds, t) else {
@@ -253,7 +312,7 @@ public struct PressureTracker: Equatable {
         var reason: PressureReason?
         var since = 0.0
         if let s = warningSince, t - s >= rules.warningSeconds {
-            reason = .warning; since = s
+            reason = rules.watchesMemoryLeft ? .memoryLow : .warning; since = s
         } else if let s = swapSince, t - s >= rules.swapSeconds {
             reason = .swap; since = s
         } else if let s = dominantSince, t - s >= rules.dominantSeconds {

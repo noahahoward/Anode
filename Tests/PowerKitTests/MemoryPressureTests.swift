@@ -702,47 +702,93 @@ final class MemoryWatchPressureTests: XCTestCase {
 }
 
 
-/// The defaults follow macOS's own pressure graph and nothing else: orange held two minutes warns, red held 15 seconds is
-/// critical, and neither swap nor one big app raises an alert by itself.
-final class PressureOnlyDefaultsTests: XCTestCase {
+/// The defaults follow the memory LEFT (RAM minus Memory Used): a warning at 2.5 GB or less, a critical alert at 0.5 GB or
+/// less that repeats every two minutes while it stays that low. The pressure level, swap and one big app do not matter.
+final class MemoryLeftDefaultsTests: XCTestCase {
 
     private func feeder() -> PressureFeeder2 { PressureFeeder2() }
-
-    func testTheDefaultsWatchOnlyThePressureLevel() {
-        let r = PressureRules.standard
-        XCTAssertFalse(r.watchesSwap)
-        XCTAssertFalse(r.watchesDominantApp)
-        XCTAssertEqual(r.warningSeconds, 120)
-        XCTAssertEqual(r.criticalSeconds, 15)
+    /// A 24 GB Mac with `left` bytes of RAM not in use; the pressure level is green unless said otherwise.
+    private func mac(left: UInt64, level: Int32? = 1) -> SystemMemoryReading {
+        reading(level, total: 24 * gib, used: 24 * gib - left)
     }
 
-    /// A build or a test run: orange for a minute and a half, then back to green. Nothing to say.
-    func testOrangeForAMinuteAndAHalfIsNotWarnedAbout() {
+    func testTheDefaultsWatchTheMemoryLeft() {
+        let r = PressureRules.standard
+        XCTAssertTrue(r.watchesMemoryLeft)
+        XCTAssertFalse(r.watchesSwap)
+        XCTAssertFalse(r.watchesDominantApp)
+        XCTAssertEqual(r.warningLeft(totalBytes: 24 * gib), 5 * gib / 2, "2.5 GB")
+        XCTAssertEqual(r.criticalLeft(totalBytes: 24 * gib), gib / 2, "0.5 GB")
+        XCTAssertEqual(r.criticalRepeatSeconds, 120)
+    }
+
+    func testASmallMacScalesTheLinesDownToItsRAM() {
+        let r = PressureRules.standard
+        XCTAssertEqual(r.warningLeft(totalBytes: 8 * gib), 2 * gib, "a quarter of 8 GB")
+        XCTAssertEqual(r.criticalLeft(totalBytes: 8 * gib), UInt64(0.05 * Double(8 * gib)))
+        XCTAssertEqual(r.warningLeft(totalBytes: 64 * gib), 5 * gib / 2, "a big Mac keeps 2.5 GB")
+    }
+
+    func testLeftBytesIsRAMMinusUsedAndNeverNegative() {
+        XCTAssertEqual(reading(1, total: 24 * gib, used: 20 * gib).leftBytes, 4 * gib)
+        XCTAssertEqual(SystemMemoryReading(totalBytes: 8, usedBytes: 9).leftBytes, 0)
+    }
+
+    /// 3 GB left is not enough of a reason, however orange the graph is.
+    func testThreeGigabytesLeftNeverAlerts() {
         var f = feeder()
-        f.hold(reading(2), from: 0, through: 100)
-        f.hold(reading(1), from: 105, through: 400)
+        f.hold(mac(left: 3 * gib, level: 4), from: 0, through: 3600)
         XCTAssertTrue(f.found.isEmpty)
     }
 
-    func testOrangeHeldTwoMinutesWarnsOnceAsAWarning() {
+    func testTwoAndAHalfGigabytesLeftWarnsOnceAfterThirtySeconds() {
         var f = feeder()
-        f.hold(reading(2), from: 0, through: 300)
-        XCTAssertEqual(f.found.map(\.verdict.reason), [.warning])
-        XCTAssertEqual(f.found.first?.t ?? 0, 120, accuracy: 0.001)
+        f.hold(mac(left: 5 * gib / 2), from: 0, through: 600)
+        XCTAssertEqual(f.found.map(\.verdict.reason), [.memoryLow])
+        XCTAssertEqual(f.found.first?.t ?? 0, 30, accuracy: 0.001)
     }
 
-    func testRedHeldFifteenSecondsIsCritical() {
+    func testABriefDipUnderTheLineIsNotWarnedAbout() {
         var f = feeder()
-        f.hold(reading(4), from: 0, through: 60)
-        XCTAssertEqual(f.found.map(\.verdict.reason), [.critical])
-        XCTAssertEqual(f.found.first?.t ?? 0, 15, accuracy: 0.001)
+        f.hold(mac(left: 2 * gib), from: 0, through: 20)
+        f.hold(mac(left: 6 * gib), from: 25, through: 400)
+        XCTAssertTrue(f.found.isEmpty)
     }
 
-    /// Normal pressure never alerts, however much swap is in use or however big one app is.
-    func testSwapAndOneBigAppAloneNeverAlert() {
+    func testHalfAGigabyteLeftIsCriticalAfterTenSecondsAndRepeatsEveryTwoMinutes() {
         var f = feeder()
-        f.hold(reading(1, swap: 40 * gib, total: 64 * gib), top: 50 * gib, from: 0, through: 3600)
-        XCTAssertTrue(f.found.isEmpty, "the pressure level was green the whole time")
+        f.hold(mac(left: gib / 2), from: 0, through: 400)
+        XCTAssertEqual(f.found.map(\.verdict.reason), Array(repeating: .memoryCritical, count: 4))
+        XCTAssertEqual(f.found.map(\.t), [10, 130, 250, 370])
+    }
+
+    func testTheRepeatsStopWhenMemoryIsFreed() {
+        var f = feeder()
+        f.hold(mac(left: gib / 4), from: 0, through: 200)
+        f.hold(mac(left: 8 * gib), from: 205, through: 600)
+        XCTAssertEqual(f.found.map(\.t), [10, 130])
+    }
+
+    func testTheWarningWordsSayHowMuchIsLeft() {
+        var f = feeder()
+        f.hold(mac(left: 2 * gib), top: 17 * gib, from: 0, through: 60)
+        var finding = makePressureFindingForWords(f.found[0].verdict)
+        XCTAssertTrue(finding.notificationBody.contains("2 GB left"), finding.notificationBody)
+        finding = makePressureFindingForWords(feederCritical())
+        XCTAssertTrue(finding.notificationBody.contains("almost out of memory"), finding.notificationBody)
+    }
+
+    private func feederCritical() -> PressureVerdict {
+        var f = feeder()
+        f.hold(mac(left: gib / 4), from: 0, through: 30)
+        return f.found[0].verdict
+    }
+
+    private func makePressureFindingForWords(_ v: PressureVerdict) -> Finding {
+        var finding = makePressureFinding("BeamNG")
+        finding.system = v.reading
+        finding.reason = v.reason
+        return finding
     }
 }
 
