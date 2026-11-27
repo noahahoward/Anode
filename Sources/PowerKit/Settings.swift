@@ -1588,6 +1588,27 @@ public final class Settings {
 
     private static func storageKey(_ key: String) -> String { "anode." + key }
 
+    // ── What an update keeps ────────────────────────────────────────────────
+
+    /// Set once this has been decided, whichever way: a new install must not be taken for an old one at its next launch.
+    private static let keptEarlierDefaultsKey = "keptDefaultsOfBefore129"
+
+    /// An update does not change what somebody had. 1.29.0 starts two things at new values: Ready By's "Hold No Higher Than"
+    /// (50 before, 80 now) and Ultra Low Power's brightness cap (a fixed quarter before, now a setting that starts at half).
+    /// An Anode that was already in use keeps the old ones; a value somebody saved is never touched. Does its work once.
+    ///
+    /// `existingInstall` is the caller's to say: whether this Mac ran Anode before this launch. Everyone who did was on 50
+    /// unless they chose otherwise; the quarter is kept for those who had used Ultra Low Power Mode's switch.
+    public func keepEarlierDefaults(existingInstall: Bool) {
+        let done = Settings.storageKey(Settings.keptEarlierDefaultsKey)
+        guard defaults.object(forKey: done) == nil else { return }
+        defaults.set(true, forKey: done)
+        guard existingInstall else { return }
+        func neverStored(_ key: String) -> Bool { defaults.object(forKey: Settings.storageKey(key)) == nil }
+        if neverStored(Key.chargeReadyByHoldAtMost) { chargeReadyByHoldAtMost = 50 }
+        if !neverStored(Key.ultraLowPowerEnabled), neverStored(Key.ultraLowPowerBrightnessCap) { ultraLowPowerBrightnessCap = 0.25 }
+    }
+
     private func writeDouble(_ key: String, _ path: WritableKeyPath<Values, Double>,
                              _ value: Double, _ def: Double, _ range: ClosedRange<Double>) {
         // NaN/inf: drop the write and keep the last good value. Clamping NaN is

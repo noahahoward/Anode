@@ -269,6 +269,14 @@ public final class HistoryStore {
         }
     }
 
+    /// Whether this Mac already has a history, under either name: the sign that Anode ran here before. Ask before opening one.
+    public static var existsOnThisMac: Bool {
+        guard let base = AnodeFiles.applicationSupport else { return false }
+        return ["Anode/history.sqlite", "BetterStats/history.sqlite"].contains {
+            FileManager.default.fileExists(atPath: base.appendingPathComponent($0).path)
+        }
+    }
+
     public init?(path: URL? = nil,
                  rawHorizon: TimeInterval = 3600,
                  bucketWidth: TimeInterval = 60,

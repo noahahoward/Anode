@@ -318,6 +318,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         monitor = PowerMonitor(chargeControlLimit: {
             ChargeController.limitForMonitor(settings: .shared, inForce: chargeLimitInForce)
         })
+        // Before the history is opened, which makes its file: whether Anode ran on this Mac before decides what an update keeps.
+        Settings.shared.keepEarlierDefaults(existingInstall: !welcomeIsOwed || HistoryStore.existsOnThisMac)
         store = HistoryStore()
         seedLiveGraphFromHistory()
         // The battery does not know the app restarted, so the trend must not
