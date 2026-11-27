@@ -148,19 +148,19 @@ enum ClipboardPanelMetrics {
     /// the grey that fits, the opacity that fits). Each shape has them where the system's does: the bar at its bottom edge only, the
     /// card at both. The last two pixels are a hard step; before them a gradual brightening of 4 or 5 points.
     static let barBottomRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
-        (4.75, 0, 0.606), (4.25, 0.03, 0.628), (3.75, 0.02, 0.61), (3.25, 0.04, 0.61), (2.75, 0.06, 0.608),
-        (2.25, 0.05, 0.578), (1.75, 0.08, 0.566), (1.25, 0.26, 0.574)]
+        (5.75, 0.02, 0.672), (5.25, 0.02, 0.682), (4.75, 0.05, 0.622), (4.25, 0.04, 0.612), (3.75, 0.06, 0.606), (3.25, 0.06, 0.59),
+        (2.75, 0.08, 0.58), (2.25, 0.11, 0.564), (1.75, 0.13, 0.538), (1.25, 0.11, 0.476)]
     /// The card's top rim: its first four half-point rows are hard bands (as they are in the system's), then it ramps off over 3 points.
-    static let cardTopBands: [(gray: CGFloat, alpha: CGFloat)] = [(0.41, 0.42), (0.59, 0.474), (0.46, 0.512), (0.34, 0.544)]
+    static let cardTopBands: [(gray: CGFloat, alpha: CGFloat)] = [(0.83, 0.596), (0.71, 0.364), (0.15, 0.36), (0.09, 0.40)]
     static let cardTopRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
-        (2.25, 0.17, 0.536), (2.75, 0.07, 0.518), (3.25, 0.05, 0.52), (3.75, 0.04, 0.528), (4.25, 0.03, 0.52), (4.75, 0.01, 0.496),
-        (5.25, 0, 0.486), (5.75, 0, 0.486)]
+        (2.25, 0.11, 0.45), (2.75, 0.12, 0.484), (3.25, 0.11, 0.496), (3.75, 0.09, 0.502), (4.25, 0.08, 0.508), (4.75, 0.08, 0.512),
+        (5.25, 0.07, 0.512), (5.75, 0.06, 0.514)]
     /// The card's bottom rim, refitted (2026-11-19) from clean pictures of the system's card over solid white, grey and black, one pixel row at
     /// a time: past the last pixel or two it is black of opacity 0.26 to 0.31, with none of the light grey the first fit (against stripes of a
     /// different kind) gave it.
     static let cardBottomRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
-        (5.75, 0, 0.30), (5.25, 0, 0.296), (4.75, 0, 0.292), (4.25, 0, 0.282), (3.75, 0, 0.272), (3.25, 0, 0.26), (2.75, 0.01, 0.246),
-        (2.25, 0.06, 0.24), (1.75, 0.16, 0.214), (1.25, 0.08, 0.214)]
+        (5.75, 0, 0.29), (5.25, 0, 0.286), (4.75, 0, 0.284), (4.25, 0, 0.276), (3.75, 0, 0.268), (3.25, 0, 0.26), (2.75, 0.02, 0.252),
+        (2.25, 0.03, 0.242), (1.75, 0.07, 0.228), (1.25, 0.16, 0.226)]
     /// What is laid over the glass, from the top down: (how far down in points, a negative one from the bottom; the grey; the opacity).
     static func tintStops(card: Bool, height: CGFloat) -> [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] {
         let h = max(height, 1)
@@ -168,7 +168,7 @@ enum ClipboardPanelMetrics {
             var stops: [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] = [(0, 0, barTintAlpha(0, height: h)), (h - 6, 0, barTintAlpha(h - 6, height: h))]
             stops += barBottomRim.map { (-$0.from, $0.gray, $0.alpha) }
             // the last two pixels: a hard step
-            stops += [(-1.0, 0.54, 0.448), (-0.5, 0.54, 0.448), (-0.5, 1.0, 0.33), (h, 1.0, 0.33)]
+            stops += [(-1.0, 0.62, 0.374), (-0.5, 0.62, 0.374), (-0.5, 1.0, 0.454), (h, 1.0, 0.454)]
             return stops
         }
         var stops: [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] = []
@@ -179,7 +179,7 @@ enum ClipboardPanelMetrics {
         // just under the top rim the system's card is a little lighter than its curve: measured 0.49 at 6 points in, the curve from 9
         stops += [(6, 0, 0.49), (9, 0, cardTintAlpha(9)), (40, 0, cardTintAlpha(40)), (h - 6, 0, cardTintAlpha(h - 6))]
         stops += cardBottomRim.map { (-$0.from, $0.gray, $0.alpha) }
-        stops += [(-1.0, 1.0, 0.208), (-0.5, 1.0, 0.208), (-0.5, 1.0, 0.622), (h, 1.0, 0.622)]
+        stops += [(-1.0, 1.0, 0.234), (-0.5, 1.0, 0.234), (-0.5, 1.0, 0.466), (h, 1.0, 0.466)]
         return stops
     }
 
