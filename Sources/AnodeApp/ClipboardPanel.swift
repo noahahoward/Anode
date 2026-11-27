@@ -178,8 +178,16 @@ enum ClipboardPanelMetrics {
         stops += cardTopRim.map { ($0.from, $0.gray, $0.alpha) }
         // just under the top rim the system's card is a little lighter than its curve: measured 0.49 at 6 points in, the curve from 9
         stops += [(6, 0, 0.49), (9, 0, cardTintAlpha(9)), (40, 0, cardTintAlpha(40)), (h - 6, 0, cardTintAlpha(h - 6))]
-        stops += cardBottomRim.map { (-$0.from, $0.gray, $0.alpha) }
-        stops += [(-1.0, 1.0, 0.234), (-0.5, 1.0, 0.234), (-0.5, 1.0, 0.466), (h, 1.0, 0.466)]
+        // The bottom rim was measured on a card of full height. A shorter one is darker where it ends (it has not got as far down the
+        // curve), so the rim takes that much more black too and keeps the light it adds: left as measured, it stood out under the
+        // darker card as a lighter strip with a hard edge.
+        let deeper = max(0, cardTintAlpha(h - rimDepth) - cardTintAlpha(cardMaxHeight - rimDepth))
+        func shaded(_ y: CGFloat, _ gray: CGFloat, _ alpha: CGFloat) -> (y: CGFloat, gray: CGFloat, alpha: CGFloat) {
+            let a = min(1, alpha + deeper)
+            return (y, gray * alpha / a, a)
+        }
+        stops += cardBottomRim.map { shaded(-$0.from, $0.gray, $0.alpha) }
+        stops += [shaded(-1.0, 1.0, 0.234), shaded(-0.5, 1.0, 0.234), shaded(-0.5, 1.0, 0.466), shaded(h, 1.0, 0.466)]
         return stops
     }
 
@@ -847,6 +855,8 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
     private let chips = FlippedView()
     private var chipViews: [ClipboardChipView] = []
     private let scroll = NSScrollView()
+    private let selectionClip = ClipboardSelectionClip()
+    private let selectionHighlight = NSView()
     private let table = NSTableView()
     private let emptyLabel = NSTextField(labelWithString: "")
     private var rows: [ClipboardRowModel] = []
@@ -910,7 +920,20 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.scrollerStyle = .overlay
+        // The selected row's highlight lies under the list, not in it: the lens along the card's bottom edge bends the list's words
+        // and icons, and bent the highlight too, into a shape cut off flat with its sides bitten.
+        selectionClip.wantsLayer = true
+        selectionClip.layer?.masksToBounds = true
+        selectionHighlight.wantsLayer = true
+        selectionHighlight.layer?.cornerRadius = M.selectionRadius
+        selectionHighlight.layer?.backgroundColor = NSColor.white.withAlphaComponent(M.selectionAlpha).cgColor
+        selectionHighlight.isHidden = true
+        selectionClip.addSubview(selectionHighlight)
+        card.body.addSubview(selectionClip)
         card.body.addSubview(scroll)
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(listScrolled), name: NSView.boundsDidChangeNotification,
+                                               object: scroll.contentView)
 
         emptyLabel.font = .systemFont(ofSize: 15)
         emptyLabel.textColor = NSColor(white: 0.62, alpha: 1)
@@ -1060,6 +1083,8 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
             scroll.isHidden = rows.isEmpty
             emptyLabel.isHidden = !rows.isEmpty
             updateEdgeLens(width: w)
+            selectionClip.frame = scroll.frame
+            placeSelectionHighlight()
         } else {
             card.isHidden = true
         }
@@ -1112,7 +1137,22 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
         updateAccessory()
     }
 
+    @objc private func listScrolled() { placeSelectionHighlight() }
+
+    /// Puts the highlight under the selected row, wherever the list has scrolled it to; what is above or below the list is cut off.
+    private func placeSelectionHighlight() {
+        let row = table.selectedRow
+        guard row >= 0, row < table.numberOfRows, !scroll.isHidden else { selectionHighlight.isHidden = true; return }
+        selectionHighlight.isHidden = false
+        selectionHighlight.frame = selectionClip.convert(table.rect(ofRow: row), from: table).insetBy(dx: M.rowInset, dy: 0)
+    }
+
+    /// The highlight and the list, for tests.
+    var selectionHighlightView: NSView { selectionHighlight }
+    var listView: NSView { scroll }
+
     private func updateSelectionLook() {
+        placeSelectionHighlight()
         table.enumerateAvailableRowViews { rowView, row in
             (rowView.view(atColumn: 0) as? ClipboardRowCellView)?.setSelected(row == self.table.selectedRow)
         }
@@ -1120,6 +1160,12 @@ final class ClipboardContentView: NSView, NSTextFieldDelegate, NSTableViewDataSo
 }
 
 // ── Chips ───────────────────────────────────────────────────────────────────
+
+/// Holds the selection highlight to the list's own rectangle; rows are counted from the top, as in the list.
+final class ClipboardSelectionClip: NSView {
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
 
 /// A filter chip: a capsule of a light veil with the kind in it, lighter while it is on.
 final class ClipboardChipView: NSView {
@@ -1157,13 +1203,9 @@ final class ClipboardChipView: NSView {
 
 // ── Rows ────────────────────────────────────────────────────────────────────
 
-/// The selection: a capsule of a light veil, inset from the card's sides, as the system panel draws it.
+/// A row of the list. Its selection is drawn under the list (`selectionHighlight`), inset from the card's sides, as a rounded veil.
 final class ClipboardRowView: NSTableRowView {
-    override func drawSelection(in dirtyRect: NSRect) {
-        let rect = bounds.insetBy(dx: ClipboardPanelMetrics.rowInset, dy: 0)
-        NSColor.white.withAlphaComponent(ClipboardPanelMetrics.selectionAlpha).setFill()
-        NSBezierPath(roundedRect: rect, xRadius: ClipboardPanelMetrics.selectionRadius, yRadius: ClipboardPanelMetrics.selectionRadius).fill()
-    }
+    override func drawSelection(in dirtyRect: NSRect) {}
     override var isEmphasized: Bool { get { true } set {} }
 }
 

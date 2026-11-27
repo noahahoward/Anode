@@ -426,6 +426,26 @@ final class ClipboardPanelTests: XCTestCase {
         XCTAssertGreaterThan(short.first { $0.y == 200 - 6 }!.alpha, tall.first { $0.y == 410 - 6 }!.alpha, "it has not got as far down the curve")
     }
 
+    /// The bottom rim was measured on a full card. Under a short, darker one it takes as much more black, so no lighter strip with a
+    /// hard edge shows where the rim begins.
+    func testAShortCardsBottomRimDoesNotStandOutFromTheCardAboveIt() {
+        typealias M = ClipboardPanelMetrics
+        for height in [CGFloat(96), 131, 193, 410] {
+            let stops = M.tintStops(card: true, height: height)
+            let above = stops.first { $0.y == height - 6 }!.alpha
+            let rimStart = stops.first { $0.y == -5.75 }!.alpha
+            XCTAssertEqual(above - rimStart, M.cardTintAlpha(404) - 0.29, accuracy: 0.001, "the same small step at \(height) as at full height")
+        }
+        XCTAssertEqual(M.tintStops(card: true, height: 410).last!.alpha, 0.466, accuracy: 0.001, "a full card's rim is as measured")
+    }
+
+    /// The highlight is under the list, not part of it: the lens on the list's layer would bend it.
+    func testTheSelectionHighlightIsNotBentByTheListsLens() {
+        let content = ClipboardContentView()
+        XCTAssertFalse(content.selectionHighlightView.isDescendant(of: content.listView))
+        XCTAssertNotNil(content.selectionHighlightView.superview)
+    }
+
     /// The system's panel casts a much darker and wider shadow than a window's own: it is drawn in a margin round the panel.
     func testTheShadowIsDrawnInAMarginRoundThePanel() {
         typealias M = ClipboardPanelMetrics
