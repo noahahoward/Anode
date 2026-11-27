@@ -151,8 +151,7 @@ enum ClipboardPanelMetrics {
         (4.75, 0.04, 0.626), (4.25, 0.04, 0.596), (3.75, 0.05, 0.586), (3.25, 0.06, 0.578), (2.75, 0.08, 0.570),
         (2.25, 0.10, 0.556), (1.75, 0.13, 0.546), (1.25, 0.06, 0.514)]
     /// The card's top rim: its first four half-point rows are hard bands (as they are in the system's), then it ramps off over 3 points.
-    /// The gradient smooths bands this thin into each other, so these are set by what the screen then shows, not by the fit alone.
-    static let cardTopBands: [(gray: CGFloat, alpha: CGFloat)] = [(1.0, 0.80), (0.74, 0.376), (0, 0.56), (0, 0.50)]
+    static let cardTopBands: [(gray: CGFloat, alpha: CGFloat)] = [(0.93, 0.698), (0.69, 0.376), (0, 0.478), (0, 0.456)]
     static let cardTopRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
         (2.25, 0.08, 0.462), (2.75, 0.11, 0.484), (3.25, 0.09, 0.498), (3.75, 0.08, 0.504), (4.25, 0.07, 0.526), (4.75, 0.06, 0.562),
         (5.25, 0.05, 0.572), (5.75, 0.04, 0.578)]
@@ -161,7 +160,7 @@ enum ClipboardPanelMetrics {
     /// different kind) gave it.
     static let cardBottomRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
         (5.75, 0, 0.302), (5.25, 0, 0.297), (4.75, 0, 0.292), (4.25, 0, 0.282), (3.75, 0, 0.272), (3.25, 0, 0.26), (2.75, 0.01, 0.246),
-        (2.25, 0, 0.31), (1.75, 0, 0.40), (1.25, 0, 0.319)]
+        (2.25, 0, 0.30), (1.75, 0, 0.364), (1.25, 0, 0.319)]
     /// What is laid over the glass, from the top down: (how far down in points, a negative one from the bottom; the grey; the opacity).
     static func tintStops(card: Bool, height: CGFloat) -> [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] {
         let h = max(height, 1)
@@ -795,31 +794,36 @@ final class ClipboardShapeView: NSView {
 
 /// Black over the glass, `top` opaque at the top edge and `bottom` at the bottom edge. It takes no clicks.
 final class ClipboardTintView: NSView {
-    override func makeBackingLayer() -> CALayer { CAGradientLayer() }
-    override var wantsUpdateLayer: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     init() {
         super.init(frame: .zero)
         wantsLayer = true
+        // Drawn, not a gradient layer: that one samples a tall gradient so coarsely that the rims' half-point bands ran into each
+        // other (the card's top two points could not be set at all). Core Graphics works it out for every pixel.
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
     /// Stops in points from the top (a negative one is from the bottom): (how far down; the grey, 0 black...1 white; the opacity).
-    /// Worked out against the view's height each time it is laid out.
-    var stops: ((_ height: CGFloat) -> [(y: CGFloat, gray: CGFloat, alpha: CGFloat)])? { didSet { needsLayout = true } }
+    /// Worked out against the view's height each time it is drawn.
+    var stops: ((_ height: CGFloat) -> [(y: CGFloat, gray: CGFloat, alpha: CGFloat)])? { didSet { needsDisplay = true } }
 
-    override func layout() {
-        super.layout()
-        guard let gradient = layer as? CAGradientLayer, let stops, bounds.height > 1 else { return }
-        gradient.startPoint = CGPoint(x: 0.5, y: 1)      // the view is not flipped: y up, so 1 is the top
-        gradient.endPoint = CGPoint(x: 0.5, y: 0)
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext, let stops, bounds.height > 1 else { return }
         let h = bounds.height
         let placed = stops(h).map { (loc: min(1, max(0, ($0.y < 0 ? h + $0.y : $0.y) / h)), gray: $0.gray, alpha: $0.alpha) }
             .sorted { $0.loc < $1.loc }
-        gradient.colors = placed.map { NSColor(white: $0.gray, alpha: $0.alpha).cgColor }
-        gradient.locations = placed.map { NSNumber(value: Double($0.loc)) }
+        let colors = placed.map { NSColor(white: $0.gray, alpha: $0.alpha).cgColor } as CFArray
+        guard let gradient = CGGradient(colorsSpace: nil, colors: colors, locations: placed.map(\.loc)) else { return }
+        // the view is not flipped: the first stop is at the top
+        context.drawLinearGradient(gradient, start: CGPoint(x: 0, y: h), end: CGPoint(x: 0, y: 0), options: [])
     }
 }
 
