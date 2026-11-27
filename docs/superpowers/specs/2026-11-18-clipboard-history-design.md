@@ -78,8 +78,8 @@ liquid glass (the `.clear` style) with a black tint over it; Clipboard History i
 
 | | measured | |
 | --- | --- | --- |
-| Bar | 520 × 87 pt, a full capsule (radius 43.5); text starts 39 pt in, about 21 pt; the picture of the match 33 pt at the right | tint: black 1.0 at the top, 0.61 at the bottom, no rim at the top, a rim at the bottom |
-| Card | up to 410 pt, top corners about 38; chips 25 pt tall at 21 pt from its top; rows 62 pt apart; icon 36, title 17, selection a rounded rectangle inset 12, corners of 24 | tint: 0.55 at the top, 0.30 at 410 pt down; rims at both edges |
+| Bar | 520 × 87 pt, a full capsule (radius 43.5); text 22 pt, its ink starting 39 pt in; the picture of the match 33 pt, centred 54 pt from the right | tint: black 1.0 at the top, 0.61 at the bottom, no rim at the top, a rim at the bottom |
+| Card | up to 410 pt, top corners about 38; chips 25 pt tall at 20.5 pt from its top, corners of 10, white 15 pt words; rows 62 pt apart; icon 36, title 17, second line 15; selection a rounded rectangle inset 12, corners of 24 | tint: 0.525 near the top (0.49 just under the rim), 0.30 at 410 pt down; rims at both edges |
 | Place | centred; the top edge is where a 137 pt window would be centred at 30% of the screen's height (282 of 1169 on this Mac); the window grows downwards | it can be dragged by the bar and opens where it was left (below) |
 | Opening | opacity 0 to 1 evenly over about 0.11 s, while it scales from about 13% larger, about the middle of that 137 pt window, on a spring (period about 0.28 s, damping 0.72, a dip of 0.6% under its size) | sampled from the fitted curve every 1/120 s |
 | Closing | opacity 1 to 0 evenly over about 0.11 s while it grows to about 7% larger | |
@@ -95,6 +95,14 @@ Dragging (logged from the system's window every 10 ms): it follows the pointer o
 default height within 5 points (a tick from the trackpad), is held until the pointer has pulled it 24 points sideways or 16 up or down,
 stops at the screen's edges and under the menu bar (the pointer may go on; it comes back when the pointer does), and opens again where it
 was left. It is whole points, so the hard rims stay on the pixels. All of it is `ClipboardPlacement`.
+
+Later passes (2026-11-26) found three things the first fits could not: the tint must be drawn pixel by pixel (a gradient layer samples a
+tall gradient so coarsely that half-point bands run into each other, and the card's top rim would not move whatever it was set to); the bar
+takes much less of the wide blur than the card (0.2 against 0.55 and up: with the card's it left half the contrast the real bar does); and
+the shadow reaches further than the first margin held. After them the rims are within about 0.01 to 0.05 of the system's over white, grey and
+black, and the shadow within 0.01. Left different on purpose or for want of a way: the selection is a plain white veil of 0.08 (the system's
+lift is about the same amount on dark and light, which one veil cannot be); the rows keep ⌘1 to ⌘9 where the system shows an action's name;
+no extra 2 points after the first row; the very last pixel under the bar is about 0.07 dimmer.
 
 The measuring tools are kept beside the checkout, in `Anode-spotlight-probe/` (not in the repo): `session.sh` makes one on-screen pass
 over striped and solid backdrops and keeps row numbers only, so no picture of the real search stays on disk.
