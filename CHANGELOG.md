@@ -7,6 +7,21 @@ feature or a visible change in how something works, the first only for a rewrite
 Nothing was bumped between 1.0.0 and 1.15.0. Those versions were assigned afterwards from the history and exist as
 git tags (`git show v1.7.0`); builds made before 1.15.0 still say 1.0.0 in their About box.
 
+## 1.29.0 — 2026-11-26
+- New in Beta Features: Clipboard History, off until you turn it on. Press Globe + Space for a panel like Spotlight's listing what you have copied, search it, and press Return to paste. The history stays on this Mac. Copies that apps mark as private, such as those from password managers, are not recorded. Globe can now be part of your own shortcuts too.
+- Memory Watch: the low-memory warning now follows how much memory is left, not the colour of macOS's memory pressure graph. It warns at 2.5 GB or less and sends a critical alert at 0.5 GB or less, repeating every two minutes until memory is freed. Smaller Macs use lower limits. To keep the critical alert on screen, set Anode's notification style to Alerts in System Settings.
+- Memory Watch: a "possible memory leak" is withdrawn if the memory comes back down. The red label in Processes goes away and an open details window says "Memory came back down".
+- Ultra Low Power Mode: the screen cap is now a setting in Beta Features, from 10% to 50% of the slider. On a new install it starts at half (it was a fixed quarter). If you already used the mode, yours stays at a quarter until you change it.
+- Ultra Low Power Mode: on battery, the "Now" menu bar reading stays live, updating once a minute (first after 30 seconds) with a countdown beside its name. Anode's window says its readings are paused, and Settings shows "Sample every" locked at 60 s.
+- Ready By: while it waits, a low battery is now charged to 20 under your limit (never past Hold No Higher Than) and held there, instead of being held wherever it was. Your Hold No Higher Than setting stays as it was; on a new install it starts at 80% (it was 50%).
+- Sound menu: the Adaptive Audio slider can be dragged from Anode's menu. While your pointer is on it, macOS's own slider is placed underneath and takes the drag.
+- The "Now" menu bar reading says Charging, Holding, Full or On AC on the charger instead of showing a dash.
+- Sound and Battery menus close when the menu bar hides itself, and when you click in one of Anode's own windows.
+- Pressing the Low Power mode that is already on turns it off.
+- Features that watch the keyboard or mouse now explain macOS's "Accessing all apps" message in bold, and once in a box when you turn one on.
+- Menu Bar Backdrop: no more 1-point gap under a notch when the menu bar hides itself, a note with a button to Menu Bar settings when macOS's own bar covers the strip, and less power used when it is set not to show on the desktop.
+- Anode no longer lists itself under "Using Significant Energy" in its Battery menu: what it costs there is almost all the work of measuring the other apps.
+
 ## 1.28.0 — 2026-11-24
 - A new Hardware tab at the bottom of the sidebar (⌘6). It draws your Mac from the inside, and every reading sits on the part it belongs to: each fan's speed in the middle of the fan, with a slider under it, CPU and GPU temperature on the heat pipe, memory use and pressure on the memory, free space and activity on the storage, network speed on the Wi-Fi part, charge, rate, temperature and health on the battery cells, power coming in at the MagSafe port, power going out on the battery, and the screen as a small desktop with your own menu bar items on it. Hover a part for what it is and whether the figure is measured or an estimate; click it to keep the details open. In a narrow window, tabs along the top jump between the parts.
 - Only real readings are shown. A figure Anode cannot read says "—" instead of a made-up number, and Wi-Fi signal strength, per-core figures and the screen's temperature are not shown because macOS does not give them out.
