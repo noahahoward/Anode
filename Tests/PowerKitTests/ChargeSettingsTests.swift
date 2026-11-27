@@ -447,7 +447,7 @@ final class ChargeSettingsTests: XCTestCase {
                        ChargeSettingsSnapshot(limit: 80, driftEnabled: false, driftGap: 5,
                                               pauseWhenHotEnabled: false, maxTemperatureC: 40,
                                               holdDuringSleep: false, drainAutomatically: false,
-                                              readyByHoldAtMost: 50))
+                                              readyByHoldAtMost: 80))
         s.chargeLimit = 63
         s.chargeDriftEnabled = true
         s.chargeDriftGap = 9
@@ -457,7 +457,7 @@ final class ChargeSettingsTests: XCTestCase {
                        ChargeSettingsSnapshot(limit: 63, driftEnabled: true, driftGap: 9,
                                               pauseWhenHotEnabled: false, maxTemperatureC: 41.5,
                                               holdDuringSleep: true, drainAutomatically: false,
-                                              readyByHoldAtMost: 50))
+                                              readyByHoldAtMost: 80))
         s.chargeDriftEnabled = false
         s.chargePauseWhenHotEnabled = true
         s.chargeHoldDuringSleep = false
@@ -466,7 +466,7 @@ final class ChargeSettingsTests: XCTestCase {
                        ChargeSettingsSnapshot(limit: 63, driftEnabled: false, driftGap: 9,
                                               pauseWhenHotEnabled: true, maxTemperatureC: 41.5,
                                               holdDuringSleep: false, drainAutomatically: true,
-                                              readyByHoldAtMost: 50))
+                                              readyByHoldAtMost: 80))
         s.chargeReadyByEnabled = true
         s.chargeReadyByMinutes = 1000
         XCTAssertEqual(s.chargeSettingsSnapshot(),
@@ -474,7 +474,7 @@ final class ChargeSettingsTests: XCTestCase {
                                               pauseWhenHotEnabled: true, maxTemperatureC: 41.5,
                                               holdDuringSleep: false, drainAutomatically: true,
                                               readyByEnabled: true, readyByMinutes: 1000,
-                                              readyByHoldAtMost: 50))
+                                              readyByHoldAtMost: 80))
     }
 
     func testSnapshotCarriesClampedReadyByMinutes() {
@@ -499,7 +499,7 @@ final class ChargeSettingsTests: XCTestCase {
                        ChargeSettingsSnapshot(limit: 100, driftEnabled: true, driftGap: 1,
                                               pauseWhenHotEnabled: true, maxTemperatureC: 25,
                                               holdDuringSleep: false, drainAutomatically: false,
-                                              readyByHoldAtMost: 50))
+                                              readyByHoldAtMost: 80))
 
         store(5, as: "chargeLimit")
         store(99, as: "chargeDriftGap")
@@ -508,7 +508,7 @@ final class ChargeSettingsTests: XCTestCase {
                        ChargeSettingsSnapshot(limit: 20, driftEnabled: true, driftGap: 30,
                                               pauseWhenHotEnabled: true, maxTemperatureC: 40,
                                               holdDuringSleep: false, drainAutomatically: false,
-                                              readyByHoldAtMost: 50))
+                                              readyByHoldAtMost: 80))
     }
 
     /// Why the limit is clamped here and not left to the policy. The policy clamps the limit it gives macOS, but a

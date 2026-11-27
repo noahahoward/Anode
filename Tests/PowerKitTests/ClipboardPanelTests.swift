@@ -253,7 +253,7 @@ final class ClipboardPanelTests: XCTestCase {
         XCTAssertEqual(M.rowInset, 12)
         XCTAssertEqual(M.selectionRadius, 24, "a rounded rectangle, not a capsule (half the row would be 31)")
         XCTAssertEqual(M.iconSize, 36)
-        XCTAssertEqual(M.searchLeft, 39)
+        XCTAssertEqual(M.searchLeft, 40, "the field's place: the ink of the first letter then starts 39 points in, as the system's does")
         XCTAssertEqual(ClipboardPlacement.centreFraction, 0.30)
         XCTAssertEqual(ClipboardPlacement.referenceHeight, 137, "the system's window with nothing typed: the bar and 50 points")
     }

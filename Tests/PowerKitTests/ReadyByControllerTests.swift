@@ -404,10 +404,10 @@ final class ReadyByControllerTests: XCTestCase {
         XCTAssertTrue(helper.waitedTimeouts.allSatisfy { $0 <= ChargeController.stopTimeout })
     }
 
-    /// The helper takes the hold (64), then refuses the plan and the person's limit (87, which only the helper can set)
-    /// as the Mac goes to sleep. Nothing the helper does can lift the hold, so the nearest limit macOS takes itself at or
-    /// above 87 goes in, and the log says what is in force: 90, not "the battery may charge past it", and not the hold
-    /// that would keep the battery at 64 all night.
+    /// The helper takes the hold (67: 20 under the limit of 87, the battery at 64 being below it), then refuses the plan
+    /// and the person's limit (87, which only the helper can set) as the Mac goes to sleep. Nothing the helper does can
+    /// lift the hold, so the nearest limit macOS takes itself at or above 87 goes in, and the log says what is in force:
+    /// 90, not "the battery may charge past it", and not the hold that would keep the battery at 67 all night.
     private func holdThenRefuseAtSleep(_ refuse: @escaping (FanCommand) -> Bool = { _ in true }) -> (ChargeController, () -> Void) {
         settings.chargeLimit = 87
         var refusing = false
@@ -421,7 +421,7 @@ final class ReadyByControllerTests: XCTestCase {
             return FanReply(ok: true, message: "ok")
         }
         let c = holding()
-        XCTAssertEqual(client.state?.mclLimit, 64, "the helper took the hold")
+        XCTAssertEqual(client.state?.mclLimit, 67, "the helper took the hold")
         return (c, { refusing = true })
     }
 
@@ -455,7 +455,7 @@ final class ReadyByControllerTests: XCTestCase {
                       lines.joined(separator: "\n"))
     }
 
-    /// The stand-in is for the sleep: on a wake before the start moment Ready By is back and holds at 64.
+    /// The stand-in is for the sleep: on a wake before the start moment Ready By is back and holds at 67.
     func testTheStandInIsGoneAtTheWakeAndReadyByHoldsAgain() {
         let (c, startRefusing) = holdThenRefuseAtSleep()
         startRefusing()
@@ -464,7 +464,7 @@ final class ReadyByControllerTests: XCTestCase {
         helper.answer = { _ in FanReply(ok: true, message: "ok") }
         c.didWake(now: clockNow.addingTimeInterval(3600))
         XCTAssertEqual(c.lastDecision?.reason, .readyBy)
-        XCTAssertEqual(client.state?.mclLimit, 64, "the stand-in outlived the sleep")
+        XCTAssertEqual(client.state?.mclLimit, 67, "the stand-in outlived the sleep")
     }
 
     /// And on a wake after the start moment the person's own limit goes back in.
@@ -485,8 +485,8 @@ final class ReadyByControllerTests: XCTestCase {
         startRefusing()
         client.succeeds = false
         c.willSleep()
-        XCTAssertEqual(client.state?.mclLimit, 64)
-        XCTAssertTrue(lines.contains { $0.contains("still in force") && $0.contains("64%") }, lines.joined(separator: "\n"))
+        XCTAssertEqual(client.state?.mclLimit, 67)
+        XCTAssertTrue(lines.contains { $0.contains("still in force") && $0.contains("67%") }, lines.joined(separator: "\n"))
         XCTAssertFalse(lines.contains { $0.contains("may charge") }, lines.joined(separator: "\n"))
     }
 
@@ -1597,7 +1597,7 @@ final class ReadyByControllerTests: XCTestCase {
         battery = Self.plugged(64, watts: 20)    // 0.3 a minute: 16 points is 53.3 minutes
         let c = make()
         let lead = by.timeIntervalSince(try XCTUnwrap(c.lastDecision?.readyBy?.raiseAt))
-        XCTAssertEqual(lead, 26 / 0.3 * 60 + 15 * 60, accuracy: 1)
+        XCTAssertEqual(lead, 16 / 0.3 * 60 + 15 * 60, accuracy: 1)
         battery = Self.plugged(64, watts: 45)    // the middle class, 0.8
         settings.chargeLimit = 81
         settings.chargeLimit = 80

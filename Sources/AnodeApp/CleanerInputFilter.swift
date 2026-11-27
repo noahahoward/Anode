@@ -39,7 +39,11 @@ final class CleanerInputFilter {
     func verdict(for event: CleanerEvent) -> CleanerVerdict {
         switch event.kind {
         case .keyDown:
-            return exit.matches(key: event.key, flags: event.flags) ? .exit : .swallow
+            // This is the way out, so fn (Globe) held down, or still counted as held, must not stop it: it counts only when the exit
+            // combination was recorded with Globe. Everywhere else fn is a modifier like the others (`Shortcut.mask`).
+            var flags = event.flags
+            if exit.modifiers & Shortcut.function == 0 { flags.remove(.maskSecondaryFn) }
+            return exit.matches(key: event.key, flags: flags) ? .exit : .swallow
         case .keyUp, .flagsChanged:
             // The first release of a key that was held at the start goes through; everything after is swallowed.
             return heldAtStart.remove(event.key) != nil ? .pass : .swallow

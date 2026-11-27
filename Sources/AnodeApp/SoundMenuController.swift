@@ -520,6 +520,7 @@ final class SoundMenuController {
             guard let self, check() else { return }
             t.invalidate(); self.hoverTimer = nil
         }
+        timer.tolerance = 0.01      // a fifth of the interval: nothing the person can see
         RunLoop.main.add(timer, forMode: .common)
         hoverTimer = timer
     }
@@ -556,6 +557,7 @@ final class SoundMenuController {
             guard let self else { t.invalidate(); return }
             self.checkSlider()
         }
+        timer.tolerance = 0.01      // a fifth of the interval: nothing the person can see
         RunLoop.main.add(timer, forMode: .common)
         sliderWatch = timer
     }

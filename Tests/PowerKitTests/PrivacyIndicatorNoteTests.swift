@@ -69,6 +69,7 @@ final class PrivacyIndicatorNoteTests: XCTestCase {
             ("Desktop Switcher", DesktopSwitcherFeature(settings: s).summary),
             ("Window Actions", WindowActionsFeature(settings: s).summary),
             ("Window Groups", WindowGroupsFeature(settings: s, controller: { nil }).summary),
+            ("Clipboard History", ClipboardHistoryFeature(settings: s, accessibility: { true }).summary),
             ("Sound Menu", SoundMenuFeature(settings: s).summary),
             ("Battery Menu", BatteryMenuFeature(settings: s).summary),
             ("Ultra Low Power Mode", UltraLowPowerFeature(settings: s).summary),
@@ -147,6 +148,7 @@ final class PrivacyIndicatorNoteTests: XCTestCase {
             "MenuBarHiderRuntime.swift",   // Menu Bar Hider
             "UltraLowPowerRuntime.swift",  // Ultra Low Power Mode
             "KeyboardCleaner.swift",       // Keyboard & Screen Cleaner: its key to end it, only while the screen is black
+            "ClipboardHistoryRuntime.swift", // Clipboard History
         ]
         XCTAssertEqual(try swiftFiles(in: "Sources/AnodeApp", containing: "KeybindCenter.shared.register("), known,
                        "a feature now registers a shortcut, which keeps the shared keyboard tap on: say so in its summary")

@@ -41,6 +41,13 @@ final class CleanerInputFilterTests: XCTestCase {
         XCTAssertEqual(filter().verdict(for: ev(.keyDown, kVK_Escape, flags)), .exit)
     }
 
+    func testAnExitRecordedWithGlobeStillNeedsIt() {
+        let withGlobe = Shortcut(key: kVK_Escape, modifiers: Shortcut.function | Shortcut.command)
+        let f = CleanerInputFilter(exit: withGlobe, keysDownAtStart: [])
+        XCTAssertEqual(f.verdict(for: ev(.keyDown, kVK_Escape, .maskCommand)), .swallow)
+        XCTAssertEqual(f.verdict(for: ev(.keyDown, kVK_Escape, [.maskCommand, .maskSecondaryFn])), .exit)
+    }
+
     func testKeyUpOfAKeyHeldAtStartPassesOnce() {
         let f = filter(held: [kVK_Command])
         XCTAssertEqual(f.verdict(for: ev(.keyUp, kVK_Command)), .pass)
