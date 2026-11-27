@@ -30,12 +30,12 @@ enum ClipboardPanelMetrics {
     // Where it opens and how it is dragged: `ClipboardPlacement`.
 
     // The bar
-    static let searchFontSize: CGFloat = 21
+    static let searchFontSize: CGFloat = 22          // measured: the ink of the real bar's words is 22 points'
     static let searchLeft: CGFloat = 39              // measured
     /// A line's box is centred in the bar, and the letters in it sit a little above that: this brings them to the bar's middle.
-    static let searchTextDrop: CGFloat = 3
+    static let searchTextDrop: CGFloat = -0.5          // the baseline 51 points under the bar's top, where the real one is
     static let accessorySize: CGFloat = 33           // measured: the picture at the bar's right
-    static let accessoryCentreFromRight: CGFloat = 46.5
+    static let accessoryCentreFromRight: CGFloat = 54          // measured: the picture's centre
     /// How far the glass reaches past the shape above and below, where the shape's own clip cuts it off: the glass draws a bright rim
     /// at its edge, and the system's panel has its rims only where the tint puts them. Not at the sides: there the glass bends what
     /// is behind it into a dark band that the system's panel shows as well (measured).
@@ -57,6 +57,14 @@ enum ClipboardPanelMetrics {
         wideWeight: [(0, 0.57), (10, 0.55), (20, 0.56), (30, 0.6), (45, 0.65), (60, 0.71), (200, 0.72)]
             .map { .init(depth: CGFloat($0.0), sigma: CGFloat($0.1)) })
 
+    /// The bar's frost: the card's, with much less of the wide blur. Measured with the same stripes up from the real bar's bottom edge:
+    /// with the card's weight (0.55 and more) ours left half the contrast the real bar does, at every spacing.
+    static var barFrost: BackdropBlurView.Frost {
+        var f = cardFrost
+        f.wideWeight = [.init(depth: 0, sigma: 0.2), .init(depth: 200, sigma: 0.2)]
+        return f
+    }
+
     /// The card's glass is not extended past its bottom: its own edge shows there, which bends what is behind it. (The system's card has
     /// none; this is a choice, for a thicker look at the bottom.)
     static let cardBottomBleed: CGFloat = 0
@@ -70,12 +78,14 @@ enum ClipboardPanelMetrics {
     static let edgeLensScale: Double = 2.0
 
     // The chips
-    static let chipsTop: CGFloat = 21                // measured, from the card's top
+    static let chipsTop: CGFloat = 20.5          // measured, from the card's top
     static let chipHeight: CGFloat = 25
     static let chipLeft: CGFloat = 20
     static let chipGap: CGFloat = 8.5
-    static let chipPadding: CGFloat = 10.5
-    static let chipFontSize: CGFloat = 14.5
+    static let chipPadding: CGFloat = 7.75          // a pill is its label and this each side: the real pills are 108, 75, 150 and 70.5 wide
+    static let chipRadius: CGFloat = 10               // measured from a pill's corner: a circle, not a capsule
+    static let chipFill: CGFloat = 0.098              // white veil: the real pill lifts a 0.55 card by 0.044
+    static let chipFontSize: CGFloat = 15          // measured: the ink of four of the real chips' words
 
     // The rows
     static let rowsTop: CGFloat = 61                 // from the card's top: after the chips
@@ -90,15 +100,15 @@ enum ClipboardPanelMetrics {
     static let titleLeft: CGFloat = 79.5
     static let trailingRight: CGFloat = 26
     static let titleFontSize: CGFloat = 17
-    static let detailFontSize: CGFloat = 12
-    static let selectionAlpha: CGFloat = 0.058         // the lift of the system's highlight over the same dark page is 0.062 against 0.076 at 0.07
+    static let detailFontSize: CGFloat = 15          // measured: the second line of a real row
+    static let selectionAlpha: CGFloat = 0.08          // the real lift is about 0.062 over dark and 0.051 over white; one white veil cannot be both, this is between
     static let emptyCardHeight: CGFloat = 96
     static let bottomPadding: CGFloat = 8
 
     // The shadow, drawn here and not by the window server, whose own is much lighter than the system panel's (measured: beside the
     // bar the backdrop is dimmed by 20% at the edge, beside the card 30%, and the gap between them to 40%).
-    static let shadowMargin: CGFloat = 48
-    static let shadowOpacity: Float = 0.72
+    static let shadowMargin: CGFloat = 60          // the real shadow still shows 51 points below the card
+    static let shadowOpacity: Float = 0.745          // measured below the card over white and grey
     static let shadowRadius: CGFloat = 22
     static let shadowDrop: CGFloat = 16
 
@@ -138,19 +148,19 @@ enum ClipboardPanelMetrics {
     /// the grey that fits, the opacity that fits). Each shape has them where the system's does: the bar at its bottom edge only, the
     /// card at both. The last two pixels are a hard step; before them a gradual brightening of 4 or 5 points.
     static let barBottomRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
-        (4.75, 0.021, 0.623), (4.25, 0.037, 0.623), (3.75, 0.035, 0.611), (3.25, 0.051, 0.611), (2.75, 0.068, 0.611),
-        (2.25, 0.066, 0.589), (1.75, 0.100, 0.589), (1.25, 0.134, 0.566)]
+        (4.75, 0.04, 0.626), (4.25, 0.04, 0.596), (3.75, 0.05, 0.586), (3.25, 0.06, 0.578), (2.75, 0.08, 0.570),
+        (2.25, 0.10, 0.556), (1.75, 0.13, 0.546), (1.25, 0.06, 0.514)]
     /// The card's top rim: its first four half-point rows are hard bands (as they are in the system's), then it ramps off over 3 points.
-    static let cardTopBands: [(gray: CGFloat, alpha: CGFloat)] = [(0.75, 0.634), (0.55, 0.486), (0.17, 0.51), (0.135, 0.52)]
+    static let cardTopBands: [(gray: CGFloat, alpha: CGFloat)] = [(0.93, 0.698), (0.69, 0.376), (0, 0.478), (0, 0.456)]
     static let cardTopRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
-        (2.25, 0.097, 0.53), (2.75, 0.078, 0.535), (3.25, 0.059, 0.54), (3.75, 0.05, 0.545), (4.25, 0.042, 0.545), (4.75, 0.03, 0.55),
-        (5.25, 0.02, 0.55)]
+        (2.25, 0.08, 0.462), (2.75, 0.11, 0.484), (3.25, 0.09, 0.498), (3.75, 0.08, 0.504), (4.25, 0.07, 0.526), (4.75, 0.06, 0.562),
+        (5.25, 0.05, 0.572), (5.75, 0.04, 0.578)]
     /// The card's bottom rim, refitted (2026-11-19) from clean pictures of the system's card over solid white, grey and black, one pixel row at
     /// a time: past the last pixel or two it is black of opacity 0.26 to 0.31, with none of the light grey the first fit (against stripes of a
     /// different kind) gave it.
     static let cardBottomRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
-        (5.75, 0, 0.31), (5.25, 0, 0.30), (4.75, 0, 0.30), (4.25, 0, 0.276), (3.75, 0, 0.276), (3.25, 0, 0.268), (2.75, 0, 0.256),
-        (2.25, 0, 0.264), (1.75, 0, 0.305), (1.25, 0, 0.319)]
+        (5.75, 0, 0.302), (5.25, 0, 0.297), (4.75, 0, 0.292), (4.25, 0, 0.282), (3.75, 0, 0.272), (3.25, 0, 0.26), (2.75, 0.01, 0.246),
+        (2.25, 0, 0.30), (1.75, 0, 0.364), (1.25, 0, 0.319)]
     /// What is laid over the glass, from the top down: (how far down in points, a negative one from the bottom; the grey; the opacity).
     static func tintStops(card: Bool, height: CGFloat) -> [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] {
         let h = max(height, 1)
@@ -158,7 +168,7 @@ enum ClipboardPanelMetrics {
             var stops: [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] = [(0, 0, barTintAlpha(0, height: h)), (h - 6, 0, barTintAlpha(h - 6, height: h))]
             stops += barBottomRim.map { (-$0.from, $0.gray, $0.alpha) }
             // the last two pixels: a hard step
-            stops += [(-1.0, 0.5, 0.463), (-0.5, 0.5, 0.463), (-0.5, 1.0, 0.394), (h, 1.0, 0.394)]
+            stops += [(-1.0, 0.59, 0.392), (-0.5, 0.59, 0.392), (-0.5, 1.0, 0.494), (h, 1.0, 0.494)]
             return stops
         }
         var stops: [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] = []
@@ -168,7 +178,7 @@ enum ClipboardPanelMetrics {
         stops += cardTopRim.map { ($0.from, $0.gray, $0.alpha) }
         stops += [(6, 0, cardTintAlpha(6)), (h - 6, 0, cardTintAlpha(h - 6))]
         stops += cardBottomRim.map { (-$0.from, $0.gray, $0.alpha) }
-        stops += [(-1.0, 1.0, 0.214), (-0.5, 1.0, 0.214), (-0.5, 1.0, 0.622), (h, 1.0, 0.622)]
+        stops += [(-1.0, 1.0, 0.234), (-0.5, 1.0, 0.234), (-0.5, 1.0, 0.622), (h, 1.0, 0.622)]
         return stops
     }
 
@@ -734,9 +744,8 @@ final class ClipboardShapeView: NSView {
         if kind == .card {
             frost = BackdropBlurView(sigma: ClipboardPanelMetrics.cardBlur, frost: ClipboardPanelMetrics.cardFrost)
         } else {
-            // the bar is frosted by the same kernel as the card, by depth from its own edge (measured: the stripes' contrast up from the bar's
-            // bottom edge follows the card's, and its middle, 43 points from either edge, is the card's at that depth)
-            var f = ClipboardPanelMetrics.cardFrost
+            // the card's kernel by depth from the bar's own edge, with less of the wide blur (see `barFrost`)
+            var f = ClipboardPanelMetrics.barFrost
             f.narrow.cornerRadius = r
             frost = BackdropBlurView(sigma: ClipboardPanelMetrics.pillBlur, frost: f)
         }
@@ -1116,12 +1125,11 @@ final class ClipboardChipView: NSView {
         self.active = active
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.cornerRadius = ClipboardPanelMetrics.chipHeight / 2
-        layer?.cornerCurve = .continuous
-        layer?.backgroundColor = NSColor.white.withAlphaComponent(active ? 0.22 : 0.09).cgColor
+        layer?.cornerRadius = ClipboardPanelMetrics.chipRadius
+        layer?.backgroundColor = NSColor.white.withAlphaComponent(active ? 0.28 : ClipboardPanelMetrics.chipFill).cgColor
         label.stringValue = title
         label.font = .systemFont(ofSize: ClipboardPanelMetrics.chipFontSize)
-        label.textColor = active ? .white : NSColor(white: 0.6, alpha: 1)
+        label.textColor = .white       // the real chips' words are white; the one in use is told by its pill
         label.sizeToFit()
         addSubview(label)
         setAccessibilityRole(.button)
@@ -1189,8 +1197,9 @@ final class ClipboardRowCellView: NSView {
     }
 
     func setSelected(_ on: Bool) {
-        subtitleField.textColor = NSColor(white: on ? 0.72 : 0.58, alpha: 1)
-        hintField.textColor = NSColor(white: on ? 0.82 : 0.66, alpha: 1)
+        // White veils, as the real card's: a solid grey was darker than a light card behind it.
+        subtitleField.textColor = NSColor.white.withAlphaComponent(on ? 0.75 : 0.65)
+        hintField.textColor = NSColor.white.withAlphaComponent(on ? 0.82 : 0.62)
     }
 
     override func layout() {
@@ -1205,7 +1214,7 @@ final class ClipboardRowCellView: NSView {
         let width = max(0, right - m.titleLeft)
         let hasSubtitle = !subtitleField.stringValue.isEmpty
         titleField.frame = NSRect(x: m.titleLeft, y: hasSubtitle ? bounds.height / 2 - 1 : (bounds.height - 22) / 2, width: width, height: 22)
-        subtitleField.frame = NSRect(x: m.titleLeft, y: bounds.height / 2 - 21, width: width, height: 16)
+        subtitleField.frame = NSRect(x: m.titleLeft, y: bounds.height / 2 - 18, width: width, height: 19)
     }
 }
 
