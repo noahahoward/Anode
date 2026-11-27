@@ -330,6 +330,16 @@ final class MainWindowController: NSObject {
         glance.isWide = hidden
     }
 
+    /// What the title bar says while Ultra Low Power Mode is on. Nothing in this window is read then, on any tab, so what it
+    /// shows is from before the mode.
+    static let readingsPausedNote = "Readings paused while Ultra Low Power Mode is on"
+
+    /// Puts that note under the window's name, or takes it away. The title bar's own subtitle: one line that is on screen
+    /// whichever tab is, and moves nothing in the window.
+    func setReadingsPaused(_ paused: Bool) {
+        window.subtitle = paused ? Self.readingsPausedNote : ""
+    }
+
     /// Show a whole-machine pane instead of the process table, or nil for the table.
     func showPane(_ view: NSView?) {
         if let view {

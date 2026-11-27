@@ -1185,9 +1185,14 @@ public struct RecentDrain {
         samples.removeAll { $0.awake <= awake - Self.window }
     }
 
-    public var mean_W: Double? {
+    public var mean_W: Double? { mean_W(minimumSpan: Self.minimumSpan) }
+
+    /// The same mean, quoted from a shorter stretch than `minimumSpan` asks for. Ultra Low Power Mode reads the battery once a
+    /// minute from a cleared window, and its first reading, thirty seconds in, is the whole window: the owner is shown that one
+    /// number, and then the mean as it fills, instead of a dash for a minute.
+    public func mean_W(minimumSpan: TimeInterval) -> Double? {
         let span = samples.reduce(0) { $0 + $1.dt }
-        guard span > 0, droppedByJump || span >= Self.minimumSpan else { return nil }
+        guard span > 0, droppedByJump || span >= minimumSpan else { return nil }
         return samples.reduce(0) { $0 + $1.watts * $1.dt } / span
     }
 }

@@ -40,6 +40,9 @@ public struct UltraRecord: Codable, Equatable {
 
     /// The screen's brightness before the mode lowered it; nil when the mode did not lower it.
     public var brightnessBefore: Float?
+    /// The ceiling this session held the screen to. Optional so that a record written before the ceiling was a setting still loads
+    /// (as nil, which was a quarter: `BrightnessCeiling.legacyCeiling`).
+    public var brightnessCeiling: Float?
     /// The mode asked for a lower refresh rate, so ending it has to ask for the earlier one back.
     public var rateLowered: Bool
     /// The keyboard backlight before the mode switched it off; nil when the mode did not.
@@ -58,6 +61,7 @@ public struct UltraRecord: Codable, Equatable {
     public init() {
         groups = []
         brightnessBefore = nil
+        brightnessCeiling = nil
         rateLowered = false
         keyboardBefore = nil
         powerModeBefore = nil
@@ -164,7 +168,8 @@ public enum UltraRecovery {
         actions += (record.throttled ?? []).map { Action.unthrottle(pid: $0.pid, startTime: $0.startTime) }
         actions += open.compactMap { group in group.appPID.map { Action.unhide(pid: $0) } }
 
-        if let brightness = BrightnessCeiling.restore(before: record.brightnessBefore, now: brightnessNow) {
+        if let brightness = BrightnessCeiling.restore(before: record.brightnessBefore, now: brightnessNow,
+                                                       ceiling: record.brightnessCeiling ?? BrightnessCeiling.legacyCeiling) {
             actions.append(.brightness(brightness))
         }
         if record.rateLowered { actions.append(.restoreRate) }

@@ -274,6 +274,9 @@ private class Pane: NSViewController {
 private final class GeneralPane: Pane {
     private var intervalSlider: NSSlider!
     private var intervalValue: NSTextField!
+    private var intervalNote: NSTextField!
+    /// Ultra Low Power Mode starting or ending changes what the interval row says, and is no Settings write.
+    private var ultraObserver: NSObjectProtocol?
     private var loginCheckbox: NSButton!
     private var loginNote: NSTextField!
     private var loginButton: NSButton!
@@ -309,6 +312,9 @@ private final class GeneralPane: Pane {
         let intervalRow = NSStackView(views: [intervalSlider, intervalValue])
         intervalRow.orientation = .horizontal
         intervalRow.spacing = 10
+        intervalNote = caption(Self.intervalNoteText)
+        ultraObserver = NotificationCenter.default.addObserver(
+            forName: UltraLowPowerController.didChange, object: nil, queue: .main) { [weak self] _ in self?.refreshLayout() }
 
         loginCheckbox = NSButton(checkboxWithTitle: "Launch Anode at login",
                                  target: self, action: #selector(loginToggled))
@@ -349,8 +355,7 @@ private final class GeneralPane: Pane {
 
         install(rows: [
             [rowLabel("Sample every:"), intervalRow],
-            [spacer, caption("How often per-process energy is read. Shorter is more responsive "
-                             + "but costs more of the battery being measured.")],
+            [spacer, intervalNote],
             [rowLabel("Startup:"), loginCheckbox],
             [spacer, loginNote],
             [spacer, loginButton],
@@ -484,9 +489,29 @@ private final class GeneralPane: Pane {
         }
     }
 
+    private static let intervalNoteText = "How often per-process energy is read. Shorter is more responsive "
+        + "but costs more of the battery being measured."
+    private static let intervalNoteUltraText = "Ultra Low Power Mode is on: Anode reads the battery once a minute, and nothing "
+        + "else, until you turn it off. Your own setting comes back then."
+
+    deinit {
+        if let o = ultraObserver { NotificationCenter.default.removeObserver(o) }
+    }
+
     override func refresh() {
-        intervalSlider.doubleValue = settings.sampleInterval
-        intervalValue.stringValue = String(format: "%.0f s", settings.sampleInterval)
+        // While Ultra Low Power Mode is on the interval is the mode's minute and not the owner's to change: the slider shows the
+        // minute, is switched off, and the note says why. The owner's own value is not touched.
+        if UltraQuiet.isOn {
+            intervalSlider.doubleValue = intervalSlider.maxValue
+            intervalSlider.isEnabled = false
+            intervalValue.stringValue = String(format: "%.0f s", MeasurementPause.interval)
+            intervalNote.stringValue = Self.intervalNoteUltraText
+        } else {
+            intervalSlider.isEnabled = true
+            intervalSlider.doubleValue = settings.sampleInterval
+            intervalValue.stringValue = String(format: "%.0f s", settings.sampleInterval)
+            intervalNote.stringValue = Self.intervalNoteText
+        }
 
         // The checkbox shows OS truth, not our last request. requiresApproval
         // is explicitly NOT "on": nothing will launch until the user approves.

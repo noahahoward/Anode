@@ -189,7 +189,8 @@ final class UltraLowPowerRuntime {
             confirm: UltraConfirmPanel(screenText: {
                 UltraConfirmPanel.screenLine(backdrop: Settings.shared.ultraLowPowerBlackBackdrop,
                                              efficiencyCores: Settings.shared.ultraLowPowerEfficiencyCores,
-                                             hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores)
+                                             hasEfficiencyCores: LiveProcessThrottler.hasEfficiencyCores,
+                                             brightnessCap: Settings.shared.ultraLowPowerBrightnessCap)
             }),
             backdrop: LiveUltraBackdrop(), load: LiveLoadReader(), widgets: widgets, icon: icon,
             presentMenu: { menu, button in

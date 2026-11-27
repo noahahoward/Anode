@@ -45,6 +45,22 @@ final class UltraLowPowerSettingsTests: XCTestCase {
         XCTAssertTrue(Settings(defaults: defaults).ultraLowPowerBlackBackdrop)
     }
 
+    /// Half the slider until the owner lowers it, never above half, never under a tenth; garbage reads as the default.
+    func testTheBrightnessCapIsHalfByDefaultAndStaysBetweenATenthAndHalf() {
+        XCTAssertEqual(Settings(defaults: defaults).ultraLowPowerBrightnessCap, 0.5)
+        Settings(defaults: defaults).ultraLowPowerBrightnessCap = 0.3
+        XCTAssertEqual(Settings(defaults: defaults).ultraLowPowerBrightnessCap, 0.3, accuracy: 0.0001, "a new handle on the same suite")
+        XCTAssertTrue(Settings(defaults: defaults).ultraLowPowerBlackBackdrop, "a separate key")
+        Settings(defaults: defaults).ultraLowPowerBrightnessCap = 0.9
+        XCTAssertEqual(Settings(defaults: defaults).ultraLowPowerBrightnessCap, 0.5, accuracy: 0.0001, "never above half")
+        Settings(defaults: defaults).ultraLowPowerBrightnessCap = 0.01
+        XCTAssertEqual(Settings(defaults: defaults).ultraLowPowerBrightnessCap, 0.1, accuracy: 0.0001, "never under a tenth")
+        let s = Settings(defaults: defaults)
+        s.ultraLowPowerBrightnessCap = 0.2
+        s.ultraLowPowerBrightnessCap = .nan
+        XCTAssertEqual(s.ultraLowPowerBrightnessCap, 0.2, accuracy: 0.0001, "a value that is not a number changes nothing")
+    }
+
     func testAlwaysKeepRoundTrips() {
         let keep = ["com.example.vpn", "job:com.example.database"]
         Settings(defaults: defaults).ultraLowPowerAlwaysKeep = keep

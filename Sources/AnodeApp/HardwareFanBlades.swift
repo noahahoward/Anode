@@ -49,10 +49,12 @@ extension HardwareCanvasView {
     /// The smallest time between two turns of the blades: the picture moves at most 20 times a second.
     static let fanStep: TimeInterval = 0.05
 
-    /// Whether the blades should be turning now: the window says the picture can be seen, at least one fan is spinning, and
-    /// Reduce Motion is off.
+    /// Whether the blades should be turning now: the window says the picture can be seen, at least one fan is spinning,
+    /// Reduce Motion is off, and Ultra Low Power Mode is off (it reads no fans, so the speed shown would be from before it,
+    /// and an animation costs the power the mode is saving).
     var fanAnimationWanted: Bool {
-        isDrawableNow()
+        !UltraQuiet.isOn
+            && isDrawableNow()
             && (readings?.fans.contains { $0.rpm > 0 } ?? false)
             && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }

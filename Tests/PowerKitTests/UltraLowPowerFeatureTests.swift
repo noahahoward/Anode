@@ -194,7 +194,7 @@ final class UltraLowPowerFeatureTests: XCTestCase {
                        ["This Mac's keyboard light could not be read or switched off, so it was left as it was."])
         // A Mac with no built-in screen gets this line every time: it says what could not be done, and blames nothing.
         XCTAssertEqual(UltraLowPowerFeature.describe([.ceilingRefused]),
-                       ["The screen's brightness could not be held at a quarter, so it was left as it was."])
+                       ["The screen's brightness could not be held at its cap, so it was left as it was."])
         // A Mac without efficiency cores (an Intel one) says so, and says what was done instead.
         XCTAssertEqual(UltraLowPowerFeature.describe([.noEfficiencyCores]),
                        ["This Mac has no efficiency cores, so work was left on the cores it has."])
@@ -281,7 +281,7 @@ final class UltraLowPowerFeatureTests: XCTestCase {
     func testTheNoteSaysThatAtRestOnlyADarkerScreenHelps() {
         let note = UltraLowPowerFeature.note
         XCTAssertTrue(note.hasPrefix("At rest, only a darker screen lowers the draw"), note)
-        XCTAssertFalse(note.contains("half"), "the ceiling is a quarter now: \(note)")
+        XCTAssertTrue(note.contains("the cap you set"), "the ceiling is the owner's now: \(note)")
     }
 
     /// Every number in the note is one the trial measured on the owner's 14-inch MacBook Pro, and none is a promise.
@@ -548,7 +548,7 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         XCTAssertTrue(stack.arrangedSubviews[0] === r.box.headline)
         XCTAssertTrue(stack.arrangedSubviews[1] === r.box.screenLabel, "under the headline")
         XCTAssertEqual(r.box.screenLabel.stringValue,
-                       "The screen is held at a quarter brightness or lower, and Low Power Mode is switched on if Anode's helper "
+                       "The screen is held at half brightness or lower, and Low Power Mode is switched on if Anode's helper "
                        + "is installed.")
         XCTAssertFalse(r.box.screenLabel.isHidden)
         XCTAssertEqual(r.box.listedNames, ["Browser", "Sync", "Database"])
@@ -587,7 +587,7 @@ final class UltraLowPowerFeatureTests: XCTestCase {
     /// One sentence, built from what will happen: each clause is there when its part is on, and only then. The cores clause
     /// needs both the owner's choice and a Mac that has efficiency cores: all eight combinations of the three inputs.
     func testTheScreenLineNamesEachPartThatWillHappen() {
-        let head = "The screen is held at a quarter brightness or lower"
+        let head = "The screen is held at half brightness or lower"
         let tail = ", and Low Power Mode is switched on if Anode's helper is installed."
         for backdrop in [false, true] {
             for choice in [false, true] {
@@ -605,26 +605,27 @@ final class UltraLowPowerFeatureTests: XCTestCase {
     /// The two lines the owner is given, word for word.
     func testTheScreenLineInTheWordsTheOwnerIsGiven() {
         XCTAssertEqual(UltraConfirmPanel.screenLine(backdrop: true, efficiencyCores: true, hasEfficiencyCores: true),
-                       "The screen is held at a quarter brightness or lower, the desktop goes black, what still runs is kept on the "
+                       "The screen is held at half brightness or lower, the desktop goes black, what still runs is kept on the "
                        + "efficiency cores, and Low Power Mode is switched on if Anode's helper is installed.")
         XCTAssertEqual(UltraConfirmPanel.screenLine(backdrop: false, efficiencyCores: false, hasEfficiencyCores: true),
-                       "The screen is held at a quarter brightness or lower, and Low Power Mode is switched on if Anode's helper "
+                       "The screen is held at half brightness or lower, and Low Power Mode is switched on if Anode's helper "
                        + "is installed.")
         // A Mac with no efficiency cores is not told they are in use, whatever the box says.
         XCTAssertEqual(UltraConfirmPanel.screenLine(backdrop: true, efficiencyCores: true, hasEfficiencyCores: false),
-                       "The screen is held at a quarter brightness or lower, the desktop goes black, and Low Power Mode is switched on "
+                       "The screen is held at half brightness or lower, the desktop goes black, and Low Power Mode is switched on "
                        + "if Anode's helper is installed.")
     }
 
-    func testTheScreenLineNeverSaysHalf() {
-        for backdrop in [false, true] {
-            for choice in [false, true] {
-                for hasCores in [false, true] {
-                    let line = UltraConfirmPanel.screenLine(backdrop: backdrop, efficiencyCores: choice, hasEfficiencyCores: hasCores)
-                    XCTAssertFalse(line.contains("half"), line)
-                }
-            }
+    /// The box names the cap the owner chose: half by default, a quarter by name, anything else as a percent.
+    func testTheScreenLineNamesTheCapTheOwnerChose() {
+        func line(_ cap: Double?) -> String {
+            cap.map { UltraConfirmPanel.screenLine(backdrop: false, efficiencyCores: false, hasEfficiencyCores: false, brightnessCap: $0) }
+                ?? UltraConfirmPanel.screenLine(backdrop: false, efficiencyCores: false, hasEfficiencyCores: false)
         }
+        XCTAssertTrue(line(nil).hasPrefix("The screen is held at half brightness or lower"), line(nil))
+        XCTAssertTrue(line(0.5).hasPrefix("The screen is held at half brightness or lower"))
+        XCTAssertTrue(line(0.25).hasPrefix("The screen is held at a quarter brightness or lower"))
+        XCTAssertTrue(line(0.3).hasPrefix("The screen is held at 30% brightness or lower"))
     }
 
     func testTheCloseButtonAndAnyOtherClosingAnswerNoOnce() {
@@ -967,13 +968,13 @@ final class UltraLowPowerFeatureTests: XCTestCase {
     }
 
     /// What is left running (the always-keep list, apps with a part Anode cannot freeze, what the guard let go, macOS's own
-    /// services) is why the summary may not say "every app", and the screen is held at a quarter brightness or lower, not just dim.
+    /// services) is why the summary may not say "every app", and the screen is held at half brightness or lower, not just dim.
     func testTheSummarySaysOnlyWhatIsTrueAndNamesTheShortcut() throws {
         let probe = Probe()
         probe.shortcutLabel = "⌃⌥⌘J"
         let (f, _) = try section(probe)
-        XCTAssertTrue(f.summary.hasPrefix("Freezes the apps and tools you are not using, and holds the screen at a quarter "
-                                          + "brightness or lower, until you turn it off."), f.summary)
+        XCTAssertTrue(f.summary.hasPrefix("Freezes the apps and tools you are not using, and holds the screen at half "
+                                          + "brightness or lower (you set the most), until you turn it off."), f.summary)
         XCTAssertFalse(f.summary.contains("every app"), f.summary)
         XCTAssertFalse(f.summary.contains("dim"), f.summary)
         XCTAssertTrue(f.summary.contains("(or choose it from a menu, or press ⌃⌥⌘J)"), "the key the owner has chosen: \(f.summary)")
@@ -984,8 +985,8 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         let probe = Probe()
         probe.shortcutLabel = nil
         let (f, _) = try section(probe)
-        XCTAssertTrue(f.summary.hasPrefix("Freezes the apps and tools you are not using, and holds the screen at a quarter "
-                                          + "brightness or lower, until you turn it off."), f.summary)
+        XCTAssertTrue(f.summary.hasPrefix("Freezes the apps and tools you are not using, and holds the screen at half "
+                                          + "brightness or lower (you set the most), until you turn it off."), f.summary)
         XCTAssertTrue(f.summary.contains("press Start (or choose it from a menu) and confirm"), f.summary)
         XCTAssertFalse(f.summary.contains("⌃"), f.summary)
         XCTAssertFalse(f.summary.contains("or press"), f.summary)
@@ -1031,6 +1032,27 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         XCTAssertTrue(column.arrangedSubviews[0] === f.enableCheckbox)
         XCTAssertTrue(column.arrangedSubviews[1] === f.efficiencyCheckbox)
         XCTAssertTrue(column.arrangedSubviews[2] === f.backdropCheckbox)
+        let row = try XCTUnwrap(column.arrangedSubviews[3] as? NSStackView, "the brightness cap is the next row")
+        XCTAssertTrue(row.arrangedSubviews.contains { $0 === f.brightnessSlider })
+    }
+
+    /// The cap is a slider from a tenth of the slider up to half of it, in steps of five percent, that writes its setting and follows
+    /// it when it changes elsewhere, and is switched off while the mode is asked for or runs (it is read when the mode starts).
+    func testTheBrightnessCapSliderWritesItsSettingAndFollowsIt() throws {
+        let (f, settings) = try section()
+        XCTAssertEqual(f.brightnessSlider.minValue, 0.1)
+        XCTAssertEqual(f.brightnessSlider.maxValue, 0.5, "half is as high as it goes")
+        XCTAssertEqual(f.brightnessSlider.doubleValue, 0.5, accuracy: 0.0001, "half by default")
+        XCTAssertEqual(f.brightnessValue.stringValue, "50%")
+        f.brightnessSlider.doubleValue = 0.3
+        _ = f.brightnessSlider.target?.perform(f.brightnessSlider.action, with: f.brightnessSlider)
+        XCTAssertEqual(settings.ultraLowPowerBrightnessCap, 0.3, accuracy: 0.0001)
+        XCTAssertEqual(f.brightnessValue.stringValue, "30%")
+        settings.ultraLowPowerBrightnessCap = 0.2
+        XCTAssertEqual(f.brightnessSlider.doubleValue, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(f.brightnessValue.stringValue, "20%")
+        settings.ultraLowPowerBrightnessCap = 0.9
+        XCTAssertEqual(settings.ultraLowPowerBrightnessCap, 0.5, accuracy: 0.0001, "never above half")
     }
 
     func testTheBackdropBoxSaysWhatItDoesAndWritesItsSetting() throws {
@@ -1071,9 +1093,11 @@ final class UltraLowPowerFeatureTests: XCTestCase {
         f.refresh()
         XCTAssertTrue(f.efficiencyCheckbox.isEnabled)
         XCTAssertTrue(f.backdropCheckbox.isEnabled)
+        XCTAssertTrue(f.brightnessSlider.isEnabled)
         press(f.startButton)
         XCTAssertFalse(f.efficiencyCheckbox.isEnabled, "the box is up")
         XCTAssertFalse(f.backdropCheckbox.isEnabled, "the box is up")
+        XCTAssertFalse(f.brightnessSlider.isEnabled, "the box is up")
         rig.confirm.press(true)
         XCTAssertEqual(rig.controller.state, .on)
         XCTAssertFalse(f.efficiencyCheckbox.isEnabled)

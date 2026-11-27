@@ -88,8 +88,8 @@ final class HardwareViewWiringTests: XCTestCase {
         let main = try code("Sources/AnodeApp/main.swift")
         XCTAssertTrue(main.contains("static func tickIsHidden(visible: Bool, panelOpen: Bool, gameShowing: Bool) -> Bool"))
         XCTAssertTrue(main.contains("static func samplingNeeds(base: SystemMetrics.Needs, gameShowing: Bool) -> SystemMetrics.Needs"))
-        XCTAssertTrue(main.contains("guard tickRuns(windowDrawn: !hidden) else"))
-        XCTAssertTrue(main.contains("guard tickRuns(windowDrawn: visible || panelOpen) else"))
+        // The tick always runs; in Ultra Low Power Mode it is slower, which is the mode's own rule and none of the tab's.
+        XCTAssertTrue(main.contains("restartTimer(at: MeasurementPause.tickInterval(ultraOn: true, setting: Settings.shared.sampleInterval),"))
         XCTAssertTrue(main.contains("sysMetrics.fansAreDriven = visible && fansPane.isDrivingFans"))
     }
 

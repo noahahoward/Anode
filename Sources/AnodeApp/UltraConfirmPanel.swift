@@ -1,4 +1,5 @@
 import AppKit
+import PowerKit
 
 // ── Ultra Low Power Mode: the confirm box ───────────────────────────────────
 //
@@ -40,8 +41,9 @@ final class UltraConfirmPanel: NSObject, UltraConfirming, NSWindowDelegate {
     /// What the box says about the screen, the desktop, the cores and Low Power Mode, under the headline: one sentence, with a
     /// clause for each part that will happen and none for a part that will not. The cores are named only when the owner asked
     /// for them (`efficiencyCores`) and this Mac has some (`hasEfficiencyCores`); a Mac that has none is told so by the section.
-    static func screenLine(backdrop: Bool, efficiencyCores: Bool, hasEfficiencyCores: Bool) -> String {
-        var line = "The screen is held at a quarter brightness or lower"
+    static func screenLine(backdrop: Bool, efficiencyCores: Bool, hasEfficiencyCores: Bool,
+                           brightnessCap: Double = Settings.ultraLowPowerBrightnessCapDefault) -> String {
+        var line = "The screen is held at \(BrightnessCeiling.words(for: brightnessCap)) brightness or lower"
         if backdrop { line += ", the desktop goes black" }
         if efficiencyCores && hasEfficiencyCores { line += ", what still runs is kept on the efficiency cores" }
         return line + ", and Low Power Mode is switched on if Anode's helper is installed."

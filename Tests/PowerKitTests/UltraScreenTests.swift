@@ -8,69 +8,104 @@ final class UltraScreenTests: XCTestCase {
 
     // ── Brightness ──────────────────────────────────────────────────────────
 
-    /// A quarter of the slider (measured, whole Mac: 0.375 about 3.2 W, 0.25 2.8 W, 0.125 2.65 W, and no gain below that).
-    func testTheCeilingIsAQuarterOfTheSlider() {
-        XCTAssertEqual(BrightnessCeiling.ceiling, 0.25)
+    /// The ceiling the rules below are checked at: a quarter of the slider (measured, whole Mac: 0.5 about 4.3 W, 0.375 about 3.2 W,
+    /// 0.25 2.8 W, 0.125 2.65 W, and no gain below that). Every decision takes the ceiling as an argument.
+    private let quarter: Float = 0.25
+
+    /// The mode holds the screen to half the slider until the owner lowers it; a record that names no ceiling was made when it was a
+    /// quarter.
+    func testTheDefaultCeilingIsHalfAndAnOldRecordWasAQuarter() {
+        XCTAssertEqual(BrightnessCeiling.defaultCeiling, 0.5)
+        XCTAssertEqual(BrightnessCeiling.legacyCeiling, 0.25)
         XCTAssertEqual(BrightnessCeiling.slack, 0.01)
     }
 
+    func testTheCeilingIsHalfAtMostAndATenthAtLeast() {
+        XCTAssertEqual(Settings.ultraLowPowerBrightnessCapRange, 0.1...0.5)
+        XCTAssertEqual(Settings.ultraLowPowerBrightnessCapDefault, 0.5)
+    }
+
+    /// Above the cap it is pulled to the cap; at or under it (a screen already dimmer than the cap) it is left alone.
+    func testClampFollowsTheCeilingItIsGiven() {
+        XCTAssertEqual(BrightnessCeiling.clamp(0.9, ceiling: 0.5), 0.5)
+        XCTAssertEqual(BrightnessCeiling.clamp(0.6, ceiling: 0.5), 0.5)
+        XCTAssertNil(BrightnessCeiling.clamp(0.5, ceiling: 0.5))
+        XCTAssertNil(BrightnessCeiling.clamp(0.4, ceiling: 0.5), "dimmer than the cap: just the cap, nothing to lower")
+        XCTAssertEqual(BrightnessCeiling.clamp(0.4, ceiling: 0.3), 0.3, "a lower cap pulls a brighter screen down to it")
+        XCTAssertNil(BrightnessCeiling.clamp(0.2, ceiling: 0.3))
+    }
+
+    /// The end of a session judges "someone else raised it" against the ceiling the session used, not a fixed one.
+    func testRestoreUsesTheSessionsCeiling() {
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.9, now: 0.5, ceiling: 0.5), 0.9)
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.9, now: 0.5, ceiling: 0.3), "0.5 is above a 0.3 session's ceiling")
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.9, now: 0.3, ceiling: 0.3), 0.9)
+    }
+
+    func testTheCapInWords() {
+        XCTAssertEqual(BrightnessCeiling.words(for: 0.5), "half")
+        XCTAssertEqual(BrightnessCeiling.words(for: 0.25), "a quarter")
+        XCTAssertEqual(BrightnessCeiling.words(for: 0.3), "30%")
+        XCTAssertEqual(BrightnessCeiling.words(for: 0.1), "10%")
+    }
+
     func testBrightnessAboveAQuarterIsPulledToAQuarter() {
-        XCTAssertEqual(BrightnessCeiling.clamp(0.8), 0.25)
-        XCTAssertEqual(BrightnessCeiling.clamp(1.0), 0.25)
-        XCTAssertEqual(BrightnessCeiling.clamp(0.5), 0.25, "0.5 is above the ceiling now")
-        XCTAssertEqual(BrightnessCeiling.clamp(0.27), 0.25, "past what the display's rounding can explain")
+        XCTAssertEqual(BrightnessCeiling.clamp(0.8, ceiling: quarter), 0.25)
+        XCTAssertEqual(BrightnessCeiling.clamp(1.0, ceiling: quarter), 0.25)
+        XCTAssertEqual(BrightnessCeiling.clamp(0.5, ceiling: quarter), 0.25, "0.5 is above the ceiling now")
+        XCTAssertEqual(BrightnessCeiling.clamp(0.27, ceiling: quarter), 0.25, "past what the display's rounding can explain")
     }
 
     func testBrightnessAtOrBelowAQuarterIsLeftAlone() {
-        XCTAssertNil(BrightnessCeiling.clamp(0.25))
-        XCTAssertNil(BrightnessCeiling.clamp(0.255), "the display reports the quarter it was given a little high")
-        XCTAssertNil(BrightnessCeiling.clamp(0.1))
-        XCTAssertNil(BrightnessCeiling.clamp(0))
+        XCTAssertNil(BrightnessCeiling.clamp(0.25, ceiling: quarter))
+        XCTAssertNil(BrightnessCeiling.clamp(0.255, ceiling: quarter), "the display reports the quarter it was given a little high")
+        XCTAssertNil(BrightnessCeiling.clamp(0.1, ceiling: quarter))
+        XCTAssertNil(BrightnessCeiling.clamp(0, ceiling: quarter))
     }
 
     func testOldBrightnessComesBackWhenStillAtTheCeiling() {
-        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.25), 0.8)
-        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.255), 0.8)
-        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.245), 0.8)
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.25, ceiling: quarter), 0.8)
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.255, ceiling: quarter), 0.8)
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.245, ceiling: quarter), 0.8)
     }
 
     /// The screen is dimmer than the ceiling at the end: macOS dimmed it further when Low Power Mode came on (measured, 0.25 to
     /// 0.2184), or the owner did. Either way it is put back to what it was before the mode.
     func testBrightnessComesBackWhenTheScreenIsDimmerThanTheCeiling() {
-        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.15), 0.8)
-        XCTAssertEqual(BrightnessCeiling.restore(before: 0.4375, now: 0.2184), 0.4375, "what macOS did to a quarter, measured")
-        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0), 0.8)
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.15, ceiling: quarter), 0.8)
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.4375, now: 0.2184, ceiling: quarter), 0.4375, "what macOS did to a quarter, measured")
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0, ceiling: quarter), 0.8)
     }
 
     func testNothingToRestoreWhenTheModeDidNotLowerIt() {
-        XCTAssertNil(BrightnessCeiling.restore(before: nil, now: 0.25))
-        XCTAssertNil(BrightnessCeiling.restore(before: nil, now: nil))
+        XCTAssertNil(BrightnessCeiling.restore(before: nil, now: 0.25, ceiling: quarter))
+        XCTAssertNil(BrightnessCeiling.restore(before: nil, now: nil, ceiling: quarter))
     }
 
     func testBrightnessIsNotChangedWhenSomebodyRaisedItAboveTheCeiling() {
-        XCTAssertNil(BrightnessCeiling.restore(before: 0.9, now: 0.7), "someone chose that, it is not the mode's doing")
-        XCTAssertNil(BrightnessCeiling.restore(before: 0.9, now: 0.27), "past what the display's rounding can explain")
-        XCTAssertEqual(BrightnessCeiling.restore(before: 0.9, now: 0.255), 0.9, "within the display's rounding: still the ceiling")
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.9, now: 0.7, ceiling: quarter), "someone chose that, it is not the mode's doing")
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.9, now: 0.27, ceiling: quarter), "past what the display's rounding can explain")
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.9, now: 0.255, ceiling: quarter), 0.9, "within the display's rounding: still the ceiling")
     }
 
     func testBrightnessIsNeverLoweredAtTheEnd() {
-        XCTAssertNil(BrightnessCeiling.restore(before: 0.2, now: 0.25), "it was under the ceiling before, and is not now")
-        XCTAssertNil(BrightnessCeiling.restore(before: 0.25, now: 0.25), "already where it was")
-        XCTAssertNil(BrightnessCeiling.restore(before: 0.25, now: 0.255))
-        XCTAssertNil(BrightnessCeiling.restore(before: 0.2, now: 0.2))
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.2, now: 0.25, ceiling: quarter), "it was under the ceiling before, and is not now")
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.25, now: 0.25, ceiling: quarter), "already where it was")
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.25, now: 0.255, ceiling: quarter))
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.2, now: 0.2, ceiling: quarter))
     }
 
     func testBrightnessIsNotRestoredWhenItIsUnreadable() {
-        XCTAssertNil(BrightnessCeiling.restore(before: 0.8, now: nil), "no way to tell where it is")
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.8, now: nil, ceiling: quarter), "no way to tell where it is")
     }
 
     func testWhyTheScreenWasOrWasNotPutBackIsNamed() {
-        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0.2184), .putBack(0.8))
-        XCTAssertEqual(BrightnessCeiling.decide(before: nil, now: 0.25), .nothingWasLowered)
-        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: nil), .couldNotBeRead)
-        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0.6), .aboveTheCeiling)
-        XCTAssertEqual(BrightnessCeiling.decide(before: 0.2, now: 0.25), .alreadyAtTheEarlierLevel)
-        XCTAssertEqual(BrightnessCeiling.decide(before: 0.25, now: 0.25), .alreadyAtTheEarlierLevel)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0.2184, ceiling: quarter), .putBack(0.8))
+        XCTAssertEqual(BrightnessCeiling.decide(before: nil, now: 0.25, ceiling: quarter), .nothingWasLowered)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: nil, ceiling: quarter), .couldNotBeRead)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0.6, ceiling: quarter), .aboveTheCeiling)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.2, now: 0.25, ceiling: quarter), .alreadyAtTheEarlierLevel)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.25, now: 0.25, ceiling: quarter), .alreadyAtTheEarlierLevel)
     }
 
     /// With the lid shut the lid dimmer holds the screen at 0, and the undo that has no `OwnBrightness` to ask (the watchdog, a launch
@@ -78,20 +113,20 @@ final class UltraScreenTests: XCTestCase {
     func testADarkScreenIsLeftWhenTheCallerAsksForIt() {
         XCTAssertEqual(BrightnessCeiling.darkAtOrBelow, LidDimmer.darkThreshold, "the same threshold the lid dimmer calls dark")
         XCTAssertEqual(BrightnessCeiling.darkAtOrBelow, 0.02)
-        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0, leavingADarkScreen: true), .screenIsDark)
-        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0.02, leavingADarkScreen: true), .screenIsDark, "at the threshold")
-        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0.021, leavingADarkScreen: true), .putBack(0.8), "above it")
-        XCTAssertNil(BrightnessCeiling.restore(before: 0.8, now: 0, leavingADarkScreen: true))
-        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.15, leavingADarkScreen: true), 0.8)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0, ceiling: quarter, leavingADarkScreen: true), .screenIsDark)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0.02, ceiling: quarter, leavingADarkScreen: true), .screenIsDark, "at the threshold")
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0.021, ceiling: quarter, leavingADarkScreen: true), .putBack(0.8), "above it")
+        XCTAssertNil(BrightnessCeiling.restore(before: 0.8, now: 0, ceiling: quarter, leavingADarkScreen: true))
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.15, ceiling: quarter, leavingADarkScreen: true), 0.8)
         // Nothing to put back, or no reading, is still said as that.
-        XCTAssertEqual(BrightnessCeiling.decide(before: nil, now: 0, leavingADarkScreen: true), .nothingWasLowered)
-        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: nil, leavingADarkScreen: true), .couldNotBeRead)
+        XCTAssertEqual(BrightnessCeiling.decide(before: nil, now: 0, ceiling: quarter, leavingADarkScreen: true), .nothingWasLowered)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: nil, ceiling: quarter, leavingADarkScreen: true), .couldNotBeRead)
     }
 
     /// The mode's own turning off asks `OwnBrightness`, so for it a dark screen is put back like any other: the default is unchanged.
     func testADarkScreenIsPutBackUnlessTheCallerAsksOtherwise() {
-        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0), .putBack(0.8))
-        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.01), 0.8)
+        XCTAssertEqual(BrightnessCeiling.decide(before: 0.8, now: 0, ceiling: quarter), .putBack(0.8))
+        XCTAssertEqual(BrightnessCeiling.restore(before: 0.8, now: 0.01, ceiling: quarter), 0.8)
     }
 
     // ── Refresh rate ────────────────────────────────────────────────────────
@@ -153,34 +188,57 @@ final class UltraScreenTests: XCTestCase {
 
     // ── When Anode measures ─────────────────────────────────────────────────
 
-    func testTickRunsNormallyWhenTheModeIsOff() {
-        for window in [false, true] {
-            for fans in [false, true] {
-                for floor in [false, true] {
-                    XCTAssertTrue(MeasurementPause.ticks(ultraOn: false, windowWorthDrawing: window, drivingFans: fans,
-                                                         chargeWatching: floor))
-                }
-            }
+    func testTheTickIsTheOwnersWhileTheModeIsOffAndAMinuteWhileItIsOn() {
+        for setting in [1.0, 2.0, 30.0] {
+            XCTAssertEqual(MeasurementPause.tickInterval(ultraOn: false, setting: setting), setting)
+            XCTAssertEqual(MeasurementPause.tickInterval(ultraOn: true, setting: setting), 60, "whatever the owner's slider says")
         }
+        XCTAssertEqual(MeasurementPause.interval, 60)
+        XCTAssertEqual(MeasurementPause.firstReading, 30)
     }
 
-    func testTickStopsWhenOnAndTheWindowIsClosed() {
-        XCTAssertFalse(MeasurementPause.ticks(ultraOn: true, windowWorthDrawing: false, drivingFans: false,
-                                              chargeWatching: false))
+    func testTheCountdownRunsToTheNextReadingAndOnlyWhileTheModeIsOn() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(MeasurementPause.secondsUntil(now.addingTimeInterval(30), now: now, ultraOn: true), 30)
+        XCTAssertEqual(MeasurementPause.secondsUntil(now.addingTimeInterval(22.2), now: now, ultraOn: true), 23, "rounded up")
+        XCTAssertEqual(MeasurementPause.secondsUntil(now.addingTimeInterval(0.4), now: now, ultraOn: true), 1)
+        XCTAssertEqual(MeasurementPause.secondsUntil(now.addingTimeInterval(-5), now: now, ultraOn: true), 0, "late: 0, never negative")
+        XCTAssertEqual(MeasurementPause.secondsUntil(now.addingTimeInterval(500), now: now, ultraOn: true), 60, "never above a minute")
+        XCTAssertNil(MeasurementPause.secondsUntil(now.addingTimeInterval(30), now: now, ultraOn: false))
+        XCTAssertNil(MeasurementPause.secondsUntil(nil, now: now, ultraOn: true))
     }
 
-    func testTickRunsWhileTheWindowIsOpen() {
-        XCTAssertTrue(MeasurementPause.ticks(ultraOn: true, windowWorthDrawing: true, drivingFans: false,
-                                             chargeWatching: false))
+    func testTheNextReadingKeepsTheScheduleAndNeverFallsInThePast() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        // On time and a little late: a minute after the one that was due, not after the tick that ran.
+        XCTAssertEqual(MeasurementPause.nextReading(after: start, now: start), start.addingTimeInterval(60))
+        XCTAssertEqual(MeasurementPause.nextReading(after: start, now: start.addingTimeInterval(4)), start.addingTimeInterval(60))
+        // The Mac slept through several: read once, then a minute from now.
+        let wake = start.addingTimeInterval(1_000)
+        XCTAssertEqual(MeasurementPause.nextReading(after: start, now: wake), wake.addingTimeInterval(60))
     }
 
-    func testTickNeverStopsWhileFansAreDrivenOrTheChargeFloorIsWatched() {
-        XCTAssertTrue(MeasurementPause.ticks(ultraOn: true, windowWorthDrawing: false, drivingFans: true,
-                                             chargeWatching: false))
-        XCTAssertTrue(MeasurementPause.ticks(ultraOn: true, windowWorthDrawing: false, drivingFans: false,
-                                             chargeWatching: true))
-        XCTAssertTrue(MeasurementPause.ticks(ultraOn: true, windowWorthDrawing: false, drivingFans: true,
-                                             chargeWatching: true))
+    /// The gauge's figure is the mean of the minute before it was published, so it is used only once that whole minute is the mode's:
+    /// the first reading (thirty seconds in) never uses it, and the live current is read instead.
+    func testTheGaugeIsUsedOnlyOnceAWholeMinuteOfTheModeIsPublished() {
+        XCTAssertNil(MeasurementPause.gaugeAge(10, sinceModeStart: 30), "the first reading: half of its minute is from before")
+        XCTAssertNil(MeasurementPause.gaugeAge(10, sinceModeStart: 69), "published 59 s in: its minute began before the mode")
+        XCTAssertEqual(MeasurementPause.gaugeAge(10, sinceModeStart: 70), 10, "published at 60 s in: all of it is the mode's")
+        XCTAssertEqual(MeasurementPause.gaugeAge(40, sinceModeStart: 150), 40)
+        XCTAssertNil(MeasurementPause.gaugeAge(100, sinceModeStart: 150), "published 50 s in")
+        XCTAssertNil(MeasurementPause.gaugeAge(nil, sinceModeStart: 500), "no gauge reading")
+    }
+
+    /// The first reading is the whole window: shown from a span of thirty seconds, where the ordinary average waits for a minute.
+    func testTheAverageCanBeQuotedFromTheFirstReading() {
+        var recent = RecentDrain()
+        recent.observe(batteryWatts: 4.0, onBattery: true, interval: 30, awake: 1_000)
+        XCTAssertNil(recent.mean_W, "the ordinary rule: under a minute is an instant")
+        XCTAssertEqual(recent.mean_W(minimumSpan: 0), 4.0)
+        recent.observe(batteryWatts: 6.0, onBattery: true, interval: 60, awake: 1_060)
+        // Weighted by the time each covers: 30 s at 4 W and 60 s at 6 W.
+        XCTAssertEqual(recent.mean_W(minimumSpan: 0)!, (4.0 * 30 + 6.0 * 60) / 90, accuracy: 1e-9)
+        XCTAssertEqual(recent.mean_W!, (4.0 * 30 + 6.0 * 60) / 90, accuracy: 1e-9, "past a minute both agree")
     }
 
     // ── After a freeze: did it make something burn? ─────────────────────────

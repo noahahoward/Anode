@@ -14,11 +14,21 @@ enum PrivacyNotice {
 
     static func key(for feature: String) -> String { "anode.privacyNoticeSeen." + feature }
 
+    /// How a feature that was just turned on says it. Nil until the running app installs it, so that nothing else that turns a
+    /// feature on (a test pressing its checkbox) can open a box or write to the person's settings.
+    static var ask: ((_ feature: String, _ summary: String) -> Void)?
+
+    /// Called by the app at launch.
+    static func installForTheApp() {
+        ask = { feature, summary in
+            showOnce(feature: feature, summary: summary,
+                     defaults: UserDefaults(suiteName: suiteName), present: { _ = $0.runModal() })
+        }
+    }
+
     /// Says it if this feature has not said it yet, and notes that it did. `summary` is the feature's description, which holds the
     /// sentence; a feature whose description has none says nothing. `present` shows the box (a test replaces it).
-    static func showOnce(feature: String, summary: String,
-                         defaults: UserDefaults? = UserDefaults(suiteName: suiteName),
-                         present: (NSAlert) -> Void = { _ = $0.runModal() }) {
+    static func showOnce(feature: String, summary: String, defaults: UserDefaults?, present: (NSAlert) -> Void) {
         guard let sentence = PrivacyIndicatorNote.sentence(in: summary), let defaults, !defaults.bool(forKey: key(for: feature)) else { return }
         defaults.set(true, forKey: key(for: feature))
         let alert = NSAlert()
@@ -32,5 +42,5 @@ enum PrivacyNotice {
 
 extension BetaFeature {
     /// Called when the person turns the feature on.
-    func saysItsPrivacyNote() { PrivacyNotice.showOnce(feature: title, summary: summary) }
+    func saysItsPrivacyNote() { PrivacyNotice.ask?(title, summary) }
 }

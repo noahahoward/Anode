@@ -108,6 +108,8 @@ public final class Settings {
         public static let ultraLowPowerEfficiencyCores = "ultraLowPowerEfficiencyCores"
         /// Ultra Low Power Mode: a black backdrop behind every app window.
         public static let ultraLowPowerBlackBackdrop = "ultraLowPowerBlackBackdrop"
+        /// Ultra Low Power Mode: the most the screen may be while it is on, as a fraction of the slider.
+        public static let ultraLowPowerBrightnessCap = "ultraLowPowerBrightnessCap"
         /// Clipboard History (Beta Features): the switch, a pause, how long entries are kept (minutes, 0 for ever), how many,
         /// whether images are kept, and the apps whose copies are never recorded.
         public static let clipboardHistoryEnabled = "clipboardHistoryEnabled"
@@ -128,6 +130,11 @@ public final class Settings {
 
     // ── Ranges (public so UI controls stay in lockstep with validation) ─────
     public static let sampleIntervalRange: ClosedRange<Double> = 1...30
+    /// The brightness cap of Ultra Low Power Mode: from a tenth of the slider up to half of it. Half is the most the mode ever
+    /// allows, so the owner can only choose dimmer.
+    public static let ultraLowPowerBrightnessCapRange: ClosedRange<Double> = 0.1...0.5
+    /// Half the slider (measured, whole Mac: 0.5 about 4.3 W, 0.25 2.8 W). The owner lowers it for more.
+    public static let ultraLowPowerBrightnessCapDefault: Double = 0.5
     /// The user said "10 hr power"; Activity Monitor uses 12. This is a
     /// preference, never a constant — hence the wide range.
     public static let powerWindowHoursRange: ClosedRange<Double> = 1...48
@@ -282,6 +289,7 @@ public final class Settings {
         /// lowers the draw (a fully black screen read 0.5 to 0.7 W under ordinary content). The owner ticks it off to keep the
         /// desktop picture.
         static let ultraLowPowerBlackBackdrop = true
+        static let ultraLowPowerBrightnessCap = Settings.ultraLowPowerBrightnessCapDefault
         /// OFF: it keeps a copy of what is copied, on disk, so the owner asks for it.
         static let clipboardHistoryEnabled = false
         static let clipboardHistoryPaused = false
@@ -414,6 +422,7 @@ public final class Settings {
         var ultraLowPowerAlwaysKeep: [String]
         var ultraLowPowerEfficiencyCores: Bool
         var ultraLowPowerBlackBackdrop: Bool
+        var ultraLowPowerBrightnessCap: Double
         var clipboardHistoryEnabled: Bool
         var clipboardHistoryPaused: Bool
         var clipboardHistoryKeepMinutes: Int
@@ -1224,6 +1233,15 @@ public final class Settings {
         set { writeBool(Key.ultraLowPowerBlackBackdrop, \.ultraLowPowerBlackBackdrop, newValue, Default.ultraLowPowerBlackBackdrop) }
     }
 
+    /// The most the screen may be while Ultra Low Power Mode is on, as a fraction of the slider: half until the owner lowers it,
+    /// never above half. A screen already under it is left as it is. Read when the mode starts.
+    public var ultraLowPowerBrightnessCap: Double {
+        get { Settings.readDouble(defaults, Key.ultraLowPowerBrightnessCap, Default.ultraLowPowerBrightnessCap,
+                                  Settings.ultraLowPowerBrightnessCapRange) }
+        set { writeDouble(Key.ultraLowPowerBrightnessCap, \.ultraLowPowerBrightnessCap, newValue,
+                          Default.ultraLowPowerBrightnessCap, Settings.ultraLowPowerBrightnessCapRange) }
+    }
+
     // ── Clipboard History (Beta Features) ───────────────────────────────────
 
     /// Whether Clipboard History is on (Beta Features). Off until asked for: it keeps what is copied, on disk, and listens for
@@ -1280,8 +1298,8 @@ public final class Settings {
         set { writeIDList(newValue, key: Key.memoryWatchIgnoredApps, keyPath: \.memoryWatchIgnoredApps) }
     }
 
-    /// Whether Memory Watch also warns when the whole Mac is low on memory (high memory pressure, a lot of swap, or one app
-    /// holding half of the RAM). Off until asked for; only has an effect while `memoryWatchEnabled` is on.
+    /// Whether Memory Watch also warns when the whole Mac is low on memory (little RAM left: `PressureRules.standard`).
+    /// Off until asked for; it works with or without `memoryWatchEnabled`.
     public var memoryWatchPressureWarning: Bool {
         get { Settings.readBool(defaults, Key.memoryWatchPressureWarning, Default.memoryWatchPressureWarning) }
         set { writeBool(Key.memoryWatchPressureWarning, \.memoryWatchPressureWarning, newValue, Default.memoryWatchPressureWarning) }
@@ -1554,6 +1572,7 @@ public final class Settings {
         if old.ultraLowPowerAlwaysKeep != now.ultraLowPowerAlwaysKeep { notify(Key.ultraLowPowerAlwaysKeep) }
         if old.ultraLowPowerEfficiencyCores != now.ultraLowPowerEfficiencyCores { notify(Key.ultraLowPowerEfficiencyCores) }
         if old.ultraLowPowerBlackBackdrop != now.ultraLowPowerBlackBackdrop { notify(Key.ultraLowPowerBlackBackdrop) }
+        if old.ultraLowPowerBrightnessCap != now.ultraLowPowerBrightnessCap { notify(Key.ultraLowPowerBrightnessCap) }
         if old.clipboardHistoryEnabled != now.clipboardHistoryEnabled { notify(Key.clipboardHistoryEnabled) }
         if old.clipboardHistoryPaused != now.clipboardHistoryPaused { notify(Key.clipboardHistoryPaused) }
         if old.clipboardHistoryKeepMinutes != now.clipboardHistoryKeepMinutes { notify(Key.clipboardHistoryKeepMinutes) }
@@ -1776,6 +1795,8 @@ public final class Settings {
                ultraLowPowerAlwaysKeep: readAlwaysKeep(d),
                ultraLowPowerEfficiencyCores: readBool(d, Key.ultraLowPowerEfficiencyCores, Default.ultraLowPowerEfficiencyCores),
                ultraLowPowerBlackBackdrop: readBool(d, Key.ultraLowPowerBlackBackdrop, Default.ultraLowPowerBlackBackdrop),
+               ultraLowPowerBrightnessCap: readDouble(d, Key.ultraLowPowerBrightnessCap, Default.ultraLowPowerBrightnessCap,
+                                                      ultraLowPowerBrightnessCapRange),
                clipboardHistoryEnabled: readBool(d, Key.clipboardHistoryEnabled, Default.clipboardHistoryEnabled),
                clipboardHistoryPaused: readBool(d, Key.clipboardHistoryPaused, Default.clipboardHistoryPaused),
                clipboardHistoryKeepMinutes: readInt(d, Key.clipboardHistoryKeepMinutes, Default.clipboardHistoryKeepMinutes,

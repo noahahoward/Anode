@@ -349,6 +349,9 @@ final class UltraLowPowerControllerTests: XCTestCase {
     override func setUpWithError() throws {
         (defaults, suiteName) = try TestDefaults.make(owner: "UltraLowPowerController", test: name)
         settings = Settings(defaults: defaults)
+        // The ceiling these tests were written at is a quarter of the slider; the setting's own default (half) and a lower choice are
+        // tested under "The ceiling is a setting" below.
+        settings.ultraLowPowerBrightnessCap = 0.25
         processes = FakeProcesses(world)
         freezer = FakeFreezer(calls); throttler = FakeThrottler(calls); hider = FakeHider(calls)
         backlight = FakeBacklight(calls); own = OwnBrightness()
@@ -758,6 +761,7 @@ final class UltraLowPowerControllerTests: XCTestCase {
         XCTAssertEqual(controller.skipped, [])
         let record = store.record
         XCTAssertEqual(record?.brightnessBefore, 0.8)
+        XCTAssertEqual(record?.brightnessCeiling, 0.25, "the ceiling this session used is on its record")
         XCTAssertEqual(record?.rateLowered, true)
         XCTAssertEqual(record?.keyboardBefore, 0.6)
         XCTAssertEqual(record?.powerModeBefore, 0)
@@ -1228,10 +1232,13 @@ final class UltraLowPowerControllerTests: XCTestCase {
         }
     }
 
-    /// The record a quit leaves for the watchdog when the screen has to wait for Low Power Mode: what remains, and nothing else.
+    /// The record a quit leaves for the watchdog when the screen has to wait for Low Power Mode: what remains, and nothing else. The
+    /// session's ceiling remains with the screen: without it the watchdog would judge the screen against a quarter, and take one held at
+    /// a higher ceiling for one somebody else had raised.
     private var whatRemainsAfterAQuit: UltraRecord {
         var record = UltraRecord()
         record.brightnessBefore = 0.4375
+        record.brightnessCeiling = 0.25
         record.powerModeBefore = 0
         record.lowPowerBefore = false
         return record
@@ -2073,6 +2080,67 @@ final class UltraLowPowerControllerTests: XCTestCase {
     }
 
     // ── The screen is held down ─────────────────────────────────────────────
+
+    // ── The ceiling is a setting ────────────────────────────────────────────
+
+    /// Half the slider until the owner lowers it: a screen above it is lowered to half, one under it is left alone.
+    func testTheDefaultCeilingIsHalfTheSlider() {
+        settings.ultraLowPowerBrightnessCap = Settings.ultraLowPowerBrightnessCapDefault
+        start()
+        XCTAssertEqual(backlight.sets, [0.5])
+        XCTAssertEqual(store.record?.brightnessBefore, 0.8)
+        XCTAssertEqual(store.record?.brightnessCeiling, 0.5)
+        controller.turnOff()
+        XCTAssertEqual(backlight.value, 0.8, "the owner's level comes back")
+    }
+
+    func testAScreenUnderTheHalfCeilingIsLeftAlone() {
+        settings.ultraLowPowerBrightnessCap = 0.5
+        backlight.value = 0.4   // under half, over the old quarter
+        start()
+        XCTAssertEqual(backlight.sets, [])
+        XCTAssertNil(store.record?.brightnessBefore)
+        controller.turnOff()
+        XCTAssertEqual(backlight.sets, [], "nothing was lowered, so nothing is put back")
+    }
+
+    /// A lower choice is held to as well: 0.8 goes to 0.3, and what is raised during the session is pulled back to 0.3.
+    func testALowerCeilingIsTheOneHeld() {
+        settings.ultraLowPowerBrightnessCap = 0.3
+        start()
+        XCTAssertEqual(backlight.sets, [0.3])
+        XCTAssertEqual(store.record?.brightnessCeiling, 0.3)
+        backlight.value = 0.9
+        controller.brightnessMayHaveChanged()
+        XCTAssertEqual(backlight.sets, [0.3, 0.3])
+    }
+
+    /// The slider moved under a running session changes nothing in it: the session keeps the ceiling it started with, on its record
+    /// too, and the end judges against that one.
+    func testTheSliderMovedDuringASessionIsNotAppliedUntilTheNextStart() {
+        settings.ultraLowPowerBrightnessCap = 0.4
+        start()
+        XCTAssertEqual(backlight.sets, [0.4])
+        settings.ultraLowPowerBrightnessCap = 0.1
+        backlight.value = 0.9
+        controller.brightnessMayHaveChanged()
+        XCTAssertEqual(backlight.sets, [0.4, 0.4], "pulled back to the session's 0.4, not the new 0.1")
+        XCTAssertEqual(store.record?.brightnessCeiling, 0.4)
+        backlight.value = 0.4
+        controller.turnOff()
+        XCTAssertEqual(backlight.value, 0.8, "0.4 is the session's ceiling, so it is the mode's to put back")
+    }
+
+    /// A record from a build that held the screen to a quarter names no ceiling, and is undone against a quarter.
+    func testARecordWithNoCeilingIsUndoneAgainstAQuarter() {
+        var record = UltraRecord()
+        record.brightnessBefore = 0.8
+        XCTAssertNil(record.brightnessCeiling)
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.25), [.brightness(0.8)])
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.45), [], "above a quarter: somebody else raised it")
+        record.brightnessCeiling = 0.5
+        XCTAssertEqual(UltraRecovery.actions(for: record, brightnessNow: 0.45), [.brightness(0.8)], "under the record's own half")
+    }
 
     func testBrightnessRaisedDuringTheSessionIsPulledBack() {
         start()

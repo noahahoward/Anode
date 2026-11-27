@@ -17,6 +17,23 @@ final class UltraQuietTests: XCTestCase {
         }
     }
 
+    /// The battery's recent rate is the one reading the mode still measures: once a minute, so the owner can see whether the mode is
+    /// worth it. Nothing else on the bar is live.
+    func testOnlyTheBatteryRateStaysLiveWhilePaused() {
+        XCTAssertTrue(MenuBarWidgetController.staysLiveWhilePaused(metricID: MetricID.batteryDrainNow.rawValue))
+        for other in [MetricID.batteryDrain, .batteryPercent, .batteryTimeLeft, .cpuUsage] {
+            XCTAssertFalse(MenuBarWidgetController.staysLiveWhilePaused(metricID: other.rawValue), other.rawValue)
+        }
+        XCTAssertFalse(MenuBarWidgetController.staysLiveWhilePaused(metricID: "anode.group"))
+    }
+
+    /// "Now (23)": the seconds to the next reading in brackets after its name, and the plain name when there is no countdown.
+    func testTheLabelCarriesTheCountdownInBrackets() {
+        XCTAssertEqual(MenuBarWidgetController.labelWithCountdown("Now", seconds: 23), "Now (23)")
+        XCTAssertEqual(MenuBarWidgetController.labelWithCountdown("Now", seconds: 0), "Now (0)")
+        XCTAssertEqual(MenuBarWidgetController.labelWithCountdown("Now", seconds: nil), "Now")
+    }
+
     func testReadingsShowTheirValuesOtherwise() {
         for value in ["12%/hr", "3.2 W", "\u{2014}", ""] {
             XCTAssertEqual(MenuBarWidgetController.shownValue(paused: false, value: value), value)

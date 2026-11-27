@@ -229,8 +229,9 @@ final class UltraLowPowerFeature: BetaFeature {
     /// they have cleared it.
     var summary: String {
         let key = shortcutLabel().map { ", or press \($0)" } ?? ""
-        return "Freezes the apps and tools you are not using, and holds the screen at a quarter brightness or lower, until you turn "
-            + "it off. Ticking the box only makes it available: it starts when you press Start (or choose it from a menu\(key)) "
+        return "Freezes the apps and tools you are not using, and holds the screen at half brightness or lower (you set the most), "
+            + "until you turn it off. Anode stops measuring, except the battery's rate once a minute so you can see what the mode "
+            + "is worth. Ticking the box only makes it available: it starts when you press Start (or choose it from a menu\(key)) "
             + "and confirm the list of what is kept and what is frozen. "
             + PrivacyIndicatorNote.text(while: "it is allowed", watching: "the keyboard for its shortcut")
     }
@@ -262,6 +263,11 @@ final class UltraLowPowerFeature: BetaFeature {
     let enableCheckbox = NSButton(checkboxWithTitle: "Allow Ultra Low Power Mode", target: nil, action: nil)
     let efficiencyCheckbox = NSButton(checkboxWithTitle: "Keep everything on the efficiency cores (slower)", target: nil, action: nil)
     let backdropCheckbox = NSButton(checkboxWithTitle: "Black out the desktop behind your windows", target: nil, action: nil)
+    /// The most the screen may be while the mode is on: from a tenth of the slider to half of it, which is as high as it goes.
+    let brightnessSlider = NSSlider(value: Settings.ultraLowPowerBrightnessCapDefault,
+                                    minValue: Settings.ultraLowPowerBrightnessCapRange.lowerBound,
+                                    maxValue: Settings.ultraLowPowerBrightnessCapRange.upperBound, target: nil, action: nil)
+    let brightnessValue = NSTextField(labelWithString: "")
     let startButton = NSButton(title: UltraLowPowerFeature.startTitle, target: nil, action: nil)
     let keepList = NSStackView()
     let addPopup = NSPopUpButton(frame: .zero, pullsDown: true)
@@ -309,7 +315,8 @@ final class UltraLowPowerFeature: BetaFeature {
     /// alone; the lowest refresh rate read 5.6 W against 7.6 W while a video played. Rounded as the figures are given. What
     /// the black backdrop saves depends on how much of the screen the windows leave uncovered, and the note says so.
     static let note = "At rest, only a darker screen lowers the draw: the black backdrop (it blacks out only what your windows "
-        + "leave uncovered) and the brightness held at a quarter or lower. When something is running, the other parts save a "
+        + "leave uncovered) and the brightness held at the cap you set: on the 14-inch MacBook Pro the whole Mac read 4.3 W with the "
+        + "slider at half, 2.8 W at a quarter and 2.65 W at an eighth, so a lower cap saves more. When something is running, the other parts save a "
         + "great deal. On the 14-inch MacBook Pro this was measured on, a busy app frozen in the background took the whole Mac "
         + "from 7.5 W down to 3.2 W. A heavy job kept on the efficiency cores took it from 27 W down to 5 W, where the same job "
         + "under Low Power Mode alone took it to 13 W. The lowest refresh rate saved about 2 W while a video played. Work is "
@@ -339,7 +346,7 @@ final class UltraLowPowerFeature: BetaFeature {
             case .rateRefused:
                 return "The screen would not take the lower refresh rate, so it was left as it was."
             case .ceilingRefused:
-                return "The screen's brightness could not be held at a quarter, so it was left as it was."
+                return "The screen's brightness could not be held at its cap, so it was left as it was."
             case .keyboardLight:
                 return "This Mac's keyboard light could not be read or switched off, so it was left as it was."
             case .noEfficiencyCores:
@@ -418,6 +425,21 @@ final class UltraLowPowerFeature: BetaFeature {
         efficiencyCheckbox.action = #selector(efficiencyToggled)
         backdropCheckbox.target = self
         backdropCheckbox.action = #selector(backdropToggled)
+        // Steps of five percent: 10, 15 ... 50.
+        brightnessSlider.numberOfTickMarks = 9
+        brightnessSlider.allowsTickMarkValuesOnly = true
+        brightnessSlider.isContinuous = true
+        brightnessSlider.target = self
+        brightnessSlider.action = #selector(brightnessMoved)
+        brightnessSlider.translatesAutoresizingMaskIntoConstraints = false
+        brightnessSlider.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        brightnessSlider.setAccessibilityLabel("Most brightness while Ultra Low Power Mode is on")
+        brightnessValue.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        let brightnessCaption = NSTextField(labelWithString: "Screen brightness, at most:")
+        brightnessCaption.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        let brightnessRow = NSStackView(views: [brightnessCaption, brightnessSlider, brightnessValue])
+        brightnessRow.orientation = .horizontal
+        brightnessRow.spacing = 8
         startButton.target = self
         startButton.action = #selector(startPressed)
         installButton.target = self
@@ -435,7 +457,7 @@ final class UltraLowPowerFeature: BetaFeature {
 
         let keepCaption = NSTextField(labelWithString: "Always keep running")
         keepCaption.font = .boldSystemFont(ofSize: NSFont.smallSystemFontSize)
-        let column = NSStackView(views: [enableCheckbox, efficiencyCheckbox, backdropCheckbox, startButton, failureLabel, keepCaption, keepList, addPopup, skippedLabel,
+        let column = NSStackView(views: [enableCheckbox, efficiencyCheckbox, backdropCheckbox, brightnessRow, startButton, failureLabel, keepCaption, keepList, addPopup, skippedLabel,
                                          leftRunningLabel, installButton, installNoteLabel, noteLabel])
         column.orientation = .vertical
         column.alignment = .leading
@@ -444,7 +466,8 @@ final class UltraLowPowerFeature: BetaFeature {
         // Listening starts with the view: a section that was never shown has nothing to keep up to date.
         if tokens.isEmpty {
             tokens = [Settings.Key.ultraLowPowerEnabled, Settings.Key.ultraLowPowerAlwaysKeep,
-                      Settings.Key.ultraLowPowerEfficiencyCores, Settings.Key.ultraLowPowerBlackBackdrop].map { key in
+                      Settings.Key.ultraLowPowerEfficiencyCores, Settings.Key.ultraLowPowerBlackBackdrop,
+                      Settings.Key.ultraLowPowerBrightnessCap].map { key in
                 settings.observe(key) { [weak self] in self?.redraw() }
             }
         }
@@ -466,6 +489,15 @@ final class UltraLowPowerFeature: BetaFeature {
     @objc private func efficiencyToggled() { settings.ultraLowPowerEfficiencyCores = efficiencyCheckbox.state == .on }
 
     @objc private func backdropToggled() { settings.ultraLowPowerBlackBackdrop = backdropCheckbox.state == .on }
+
+    @objc private func brightnessMoved() {
+        settings.ultraLowPowerBrightnessCap = brightnessSlider.doubleValue
+        // Continuous drag: the label tracks even when the write changed nothing.
+        brightnessValue.stringValue = Self.percent(settings.ultraLowPowerBrightnessCap)
+    }
+
+    /// The cap as the section shows it: "50%".
+    static func percent(_ cap: Double) -> String { "\(Int((cap * 100).rounded()))%" }
 
     @objc private func startPressed() {
         guard let c = controller() else { return }
@@ -548,6 +580,9 @@ final class UltraLowPowerFeature: BetaFeature {
         efficiencyCheckbox.state = settings.ultraLowPowerEfficiencyCores ? .on : .off
         backdropCheckbox.state = settings.ultraLowPowerBlackBackdrop ? .on : .off
         for choice in [efficiencyCheckbox, backdropCheckbox] { choice.isEnabled = Self.optionsEnabled(state: c?.state) }
+        brightnessSlider.isEnabled = Self.optionsEnabled(state: c?.state)
+        brightnessSlider.doubleValue = settings.ultraLowPowerBrightnessCap
+        brightnessValue.stringValue = Self.percent(settings.ultraLowPowerBrightnessCap)
         let look = Self.buttonLook(ticked: ticked, state: c?.state, starting: c?.isStarting ?? false)
         startButton.title = look.title
         startButton.isEnabled = look.isEnabled

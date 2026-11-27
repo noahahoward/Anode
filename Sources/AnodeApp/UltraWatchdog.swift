@@ -247,7 +247,8 @@ enum UltraWatchdog {
         }
         let panel = backlight()
         let now = panel.brightness()
-        switch BrightnessCeiling.decide(before: before, now: now, leavingADarkScreen: true) {
+        switch BrightnessCeiling.decide(before: before, now: now, ceiling: record.brightnessCeiling ?? BrightnessCeiling.legacyCeiling,
+                                        leavingADarkScreen: true) {
         case .putBack(let level):
             // Refused: the screen is still where it was, and a launch can try again.
             guard panel.setBrightness(level) else {

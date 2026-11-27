@@ -721,10 +721,10 @@ final class UltraLowPowerWiringTests: XCTestCase {
         let r = try rig(ticked: true); defer { done(r) }
         r.backlight.value = 0.9
         start(r)
-        XCTAssertEqual(r.backlight.value, 0.25)
+        XCTAssertEqual(r.backlight.value, 0.5, "half the slider, the ceiling until the owner lowers it")
         r.backlight.value = 0.8   // a key press
         r.ticker.active[0].fire()
-        XCTAssertEqual(r.backlight.value, 0.25, "pulled back by the watch")
+        XCTAssertEqual(r.backlight.value, 0.5, "pulled back by the watch")
     }
 
     // ── The readings and the icon ───────────────────────────────────────────

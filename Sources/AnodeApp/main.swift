@@ -301,6 +301,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
 
     func applicationDidFinishLaunching(_ note: Notification) {
         RunTrace.launch()
+        // The sandboxed test copy keeps its settings in memory, so it does not say it: the answer would go in the person's own.
+        if !AppSandbox.isOn { PrivacyNotice.installForTheApp() }
         // A quit asked for from outside gets through a dialog that is on screen (the first-run questions, above all).
         QuitRequest.shared.install()
         // Every accessibility call into another app waits for its answer, six seconds by default if the app
@@ -461,6 +463,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // eight seconds later. `refresh` re-reads the needs and re-paces the timer,
         // so both halves follow from this one call.
         widgets.onPanelVisibilityChange = { [weak self] _ in self?.refresh() }
+        // While Ultra Low Power Mode has the readings paused, the battery's rate is still read once a minute: the seconds to the next
+        // reading are drawn beside its name.
+        widgets.countdownSeconds = { [weak self] in self?.ultraCountdownSeconds() }
         // Nothing of the hider exists until its setting is on (Beta Features).
         menuBarHider = MenuBarHiderRuntime.live(widgets: widgets, openBetaFeatures: { [weak self] in self?.betaFeaturesWindow.show() })
         // Made after Keep Awake, whose own recovery has put the screen back by now. A session a crash left is undone here, and
@@ -594,21 +599,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 self.restartTimer(hidden: !awake)
                 if awake { self.refresh() }
             }
-        // Ultra Low Power Mode starting or ending decides whether the tick runs at all, and whether the game strip may be up.
-        // Posted for every change the controller makes, so this is only a re-read: the timer is rebuilt or removed only when
-        // the answer moved.
+        // Ultra Low Power Mode starting or ending decides how fast the tick runs (a minute, battery only), and whether the game strip
+        // may be up. Posted for every change the controller makes, so this is only a re-read: the timer is rebuilt only when the
+        // answer moved.
         NotificationCenter.default.addObserver(
             forName: UltraLowPowerController.didChange, object: nil, queue: .main) { [weak self] _ in
                 guard let self else { return }
-                // The mode may have just ended with the tick stopped, so there is no tick to be the net under the lid
-                // notifications (`ScreenWatch`): look again before `windowIsWorthDrawing` is read below.
+                // The mode's tick does not run the lid notifications' net often: look again before `windowIsWorthDrawing` is read.
                 ScreenWatch.shared.update()
-                let wasTicking = self.timer != nil
                 self.gameMode?.reevaluate()
                 self.restartTimer(hidden: !self.windowIsWorthDrawing)
-                // The tick is back after a pause: read now, so the bar stops saying "Paused" with fresh numbers rather than
-                // at the first interval.
-                if !wasTicking, self.timer != nil { self.refresh() }
+                // The mode has ended: read now, so the bar stops saying "Paused" with fresh numbers rather than at the first
+                // interval.
+                if self.ultraEndedUnseen { self.ultraEndedUnseen = false; self.refresh() }
             }
         // The lid shutting or opening. The tick re-reads the same answer, so this is about promptness: back to the fast
         // rate, and a fresh reading, the moment the lid opens rather than at the next slow tick. Asynchronous because
@@ -854,25 +857,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
     /// rebuild the timer when the rate actually needs to change.
     private var timerInterval: TimeInterval = 0
 
-    /// Whether the sampling tick runs at all, by `MeasurementPause`: while Ultra Low Power Mode is on it runs only for a window
-    /// that is being drawn, or while fans are driven. `chargeWatching` is false: Charge Control watches the floor with its own
-    /// timer and its own battery read, and nothing in it waits on this tick (it keeps both in every case, as do fan control
-    /// and Keep Awake).
-    private func tickRuns(windowDrawn: Bool) -> Bool {
-        MeasurementPause.ticks(ultraOn: UltraQuiet.isOn, windowWorthDrawing: windowDrawn,
-                               drivingFans: fansPane.isDrivingFans, chargeWatching: false)
+    // ── Ultra Low Power Mode and the tick ───────────────────────────────────
+    //
+    // While the mode is on the tick is the mode's own: once a minute, the first one `MeasurementPause.firstReading` after the mode
+    // came on, and it reads the battery and nothing else (`refreshUltra`). The one reading it feeds is the Now widget, from an
+    // average that was cleared when the mode came on, so the owner can see whether the mode is worth it. Charge Control watches the
+    // floor with its own timer and its own battery read, and nothing in it waits on this tick.
+
+    /// Whether the mode was on the last time `noteUltraState` looked.
+    private(set) var ultraWasOn = false
+    /// When the next reading is due while the mode is on; nil when it is off. Main thread.
+    private(set) var ultraNextReading: Date?
+    /// When the mode came on, as this tick saw it; nil when it is off.
+    private var ultraStartedAt: Date?
+    /// The mode ended and no normal tick has run since.
+    private var ultraEndedUnseen = false
+
+    /// Notices the mode starting or ending, here and in one place, whatever asked first (the controller's notice, a tick, a window
+    /// coming forward): the average is cleared at both ends, what the registry holds of the rate is dropped (it is from before, and
+    /// would be shown as now), and the first reading is scheduled. Idempotent. Main thread.
+    @discardableResult
+    func noteUltraState() -> Bool {
+        let on = UltraQuiet.isOn
+        guard on != ultraWasOn else { return false }
+        ultraWasOn = on
+        ultraEndedUnseen = !on
+        // The sampling queue owns it, and the first tick of the mode is behind this on that queue.
+        sampling.async { [weak self] in self?.recentDrain = RecentDrain() }
+        lastRecent_W = nil
+        MetricRegistry.shared.update(displayedRate: nil)
+        ultraStartedAt = on ? Date() : nil
+        ultraNextReading = on ? Date().addingTimeInterval(MeasurementPause.firstReading) : nil
+        // The bar was drawn for the mode before this ran (the readings answer the controller's notice first): drawn again with the
+        // rate cleared and the countdown started, which is what starts the countdown's own timer. Not at the end, where the tick
+        // that follows draws the bar with fresh numbers and not the stale ones.
+        if on { widgets?.refresh() }
+        // The sidebar's fan and temperature glyphs animate on their own and no reading is coming to stop them. The next normal
+        // tick sets them again.
+        if on { main?.sidebar.pauseSelfRunningAnimations() }
+        // The window holds its last readings in the mode, on every tab: its title bar says so for as long as that is true.
+        main?.setReadingsPaused(on)
+        return true
     }
 
-    /// No timer at all, not a slow one: nothing wakes the app to measure. `timerInterval` goes back to 0 so the next
-    /// `restartTimer(at:)` builds one whatever its interval.
-    private func stopTimer() {
-        timer?.invalidate()
-        timer = nil
-        timerInterval = 0
+    /// Whole seconds to the next reading, for the countdown beside "Now"; nil unless the mode is on.
+    func ultraCountdownSeconds() -> Int? {
+        MeasurementPause.secondsUntil(ultraNextReading, now: Date(), ultraOn: UltraQuiet.isOn)
     }
 
     func restartTimer(hidden: Bool = false) {
-        guard tickRuns(windowDrawn: !hidden) else { stopTimer(); return }
+        noteUltraState()
+        if UltraQuiet.isOn {
+            restartTimer(at: MeasurementPause.tickInterval(ultraOn: true, setting: Settings.shared.sampleInterval),
+                         firstFire: ultraNextReading)
+            return
+        }
         // Every caller passes "nobody is looking at the window"; a strip over a game is somebody looking.
         let hidden = Self.tickIsHidden(visible: !hidden, panelOpen: false, gameShowing: gameMode?.isShowing ?? false)
         restartTimer(at: Self.cadence(hidden: hidden,
@@ -935,7 +974,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         return setting
     }
 
-    private func restartTimer(at interval: TimeInterval) {
+    private func restartTimer(at interval: TimeInterval, firstFire: Date? = nil) {
         guard interval != timerInterval else { return }
         timer?.invalidate()
         timerInterval = interval
@@ -962,9 +1001,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // depend on AppKit having registered the mode before this timer was built.
         // It is one line and it removes an ordering assumption — which is the same
         // class of assumption that produced the bug above.
-        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
-            self?.refresh()
-        }
+        let fire: (Timer) -> Void = { [weak self] _ in self?.refresh() }
+        // The mode's first reading is thirty seconds after it came on, and then a minute apart: a timer that fires at a date and then
+        // repeats.
+        let t = firstFire.map { Timer(fire: max($0, Date()), interval: interval, repeats: true, block: fire) }
+            ?? Timer(timeInterval: interval, repeats: true, block: fire)
         RunLoop.main.add(t, forMode: .common)
         RunLoop.main.add(t, forMode: .eventTracking)
         timer = t
@@ -979,16 +1020,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // monitor differences actual elapsed time rather than assuming the nominal
         // interval, so a late tick costs accuracy nothing. Much more than this and
         // the hidden 8 s cadence starts to wander visibly in the menu bar.
-        timer?.tolerance = interval * 0.1
+        //
+        // The mode's minute is held to a second instead: the countdown beside "Now" reaches 0 when the reading is due, and six
+        // seconds of 0 would look like it had stopped.
+        timer?.tolerance = firstFire == nil ? interval * 0.1 : 1
     }
 
     /// See `StrandingLog`. Main-thread only, like the tick that feeds it.
     private var strandingLog = StrandingLog()
 
+    /// The tick while Ultra Low Power Mode is on: when a reading is due, the battery is read and the Now widget is given it; no
+    /// sweep, no history, no graph, no Memory Watch, no lifetime model or time-left estimate (what the mode draws is not what the Mac
+    /// usually draws, and none of those should learn from it). A tick that comes before the reading is due does nothing.
+    ///
+    /// The average is the sampling queue's, cleared when the mode came on (`noteUltraState`), and quoted from the first reading
+    /// on (`mean_W(minimumSpan:)`). Until it has one the widget shows its dash, never the figure from before the mode.
+    private func refreshUltra(_ m: PowerMonitor) {
+        let now = Date()
+        guard let due = ultraNextReading, now >= due.addingTimeInterval(-0.5) else { return }
+        ultraNextReading = MeasurementPause.nextReading(after: due, now: now)
+        let sinceStart = ultraStartedAt.map { now.timeIntervalSince($0) } ?? 0
+        sampleGate.submit(on: sampling) { [weak self] in
+            guard let self, let snap = m.tick(full: false, attribution: false) else { return }
+            var recent_W: Double?
+            if let st = snap.state {
+                // The gauge's minute is used once a whole minute of the mode has been published; before that its figure still holds
+                // some of the draw from before the mode, and the pack's live current is read instead.
+                self.recentDrain.observe(
+                    batteryWatts: LifetimeDrainModel.batteryWatts(
+                        state: st, measured_W: snap.measured_W,
+                        measuredAge: MeasurementPause.gaugeAge(snap.measuredAge, sinceModeStart: sinceStart),
+                        smoothed_W: snap.smoothed_W),
+                    onBattery: !st.onAC, interval: snap.interval, awake: PowerMonitor.awakeSeconds())
+                recent_W = self.recentDrain.mean_W(minimumSpan: 0)
+            }
+            DispatchQueue.main.async {
+                // The mode ended while this was being read: its numbers are not for the normal bar.
+                guard UltraQuiet.isOn else { return }
+                self.lastRecent_W = recent_W
+                MetricRegistry.shared.update(with: snap)
+                let rate = Self.reconciledRate(snap, nil, previous: nil, recent_W: recent_W)
+                MetricRegistry.shared.update(displayedRate: rate.recentPctHr == nil ? nil : rate)
+                self.widgets.refresh()
+            }
+        }
+    }
+
     func refresh() {
         guard let m = monitor else { return }
         // The net under the lid notifications: one registry read per tick, so a missed message costs one tick.
         ScreenWatch.shared.update()
+        noteUltraState()
+        // Ultra Low Power Mode: the battery, once a minute, and nothing else.
+        if UltraQuiet.isOn { return refreshUltra(m) }
+        // A normal tick is the read the end of the mode asks for.
+        ultraEndedUnseen = false
         // The cheap half first: a closed window cannot be stranded, and that is
         // the state this app spends most of its life in, so the hidden tick pays
         // one property read and never asks the window server anything.
@@ -1010,9 +1096,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
         // decides which subsystems this tick pays for — see `visibleNeeds`.
         // An open panel is a reader too — see `MenuBarWidgetController.isPanelOpen`.
         let panelOpen = ((widgets?.isPanelOpen ?? false) || batteryMenuIsOpen) && ScreenWatch.shared.isWatched
-        // Ultra Low Power Mode with nothing on screen to read it: nothing is sampled and nothing is written to history. A tick
-        // already queued when the mode began lands here, as does a caller that did not ask the timer first.
-        guard tickRuns(windowDrawn: visible || panelOpen) else { stopTimer(); return }
         let needs = Self.samplingNeeds(base: visible ? visibleNeeds : hiddenNeeds, gameShowing: gameMode?.isShowing ?? false)
         // Main-thread state for the same reason: the widget configs live here.
         let widgetNeedsFull = Settings.shared.menuBarWidgetsEnabled
@@ -1201,6 +1284,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSTableViewDataSource,
                 joulesPerPercent: snap.state == nil ? nil : snap.scale.joulesPerPercent)
 
             DispatchQueue.main.async {
+                // A normal tick that was already on the queue when Ultra Low Power Mode came on: its numbers are from before.
+                guard !UltraQuiet.isOn else { return }
                 // The sampling queue's cost is logged above; this is the OTHER
                 // half of a tick, and the half that was never measured — the
                 // menu bar widgets redraw here on every hidden tick.

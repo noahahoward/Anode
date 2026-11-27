@@ -5,17 +5,32 @@ import Foundation
 
 // ── Brightness ──────────────────────────────────────────────────────────────
 
-/// The most the mode lets the screen be: a quarter of the slider. Measured, whole Mac, with the slider at 0.375: about 3.2 W;
-/// at 0.25: 2.8 W; at 0.125: 2.65 W; and no gain below that.
+/// The most the mode lets the screen be: a ceiling the owner sets, half of the slider unless they lower it. Measured, whole Mac,
+/// with the slider at 0.5: about 4.3 W; at 0.375: 3.2 W; at 0.25: 2.8 W; at 0.125: 2.65 W; and no gain below that.
+///
+/// The ceiling is a parameter of every decision below, and a session writes the one it used on its record, so the watchdog and a
+/// launch after a crash put the screen back against the number the session held it to, not against whatever the setting says now.
 public enum BrightnessCeiling {
-    public static let ceiling: Float = 0.25
+    /// What a new Mac holds the screen to until the owner lowers it: half the slider.
+    public static let defaultCeiling: Float = Float(Settings.ultraLowPowerBrightnessCapDefault)
+    /// What a record that does not name its ceiling was made under: the mode held the screen to a quarter before the ceiling was a setting.
+    public static let legacyCeiling: Float = 0.25
     /// What the display's own rounding can add or take away when brightness is read back.
     public static let slack: Float = 0.01
 
     /// What to set the screen to, when it is brighter than the ceiling; nil when it is at or below it. Going dimmer is
     /// always allowed, so only the way up is held.
-    public static func clamp(_ current: Float) -> Float? {
+    public static func clamp(_ current: Float, ceiling: Float) -> Float? {
         current > ceiling + slack ? ceiling : nil
+    }
+
+    /// The cap in words for a sentence ("held at half brightness or lower"): half and a quarter by name, anything else as a percent.
+    public static func words(for cap: Double) -> String {
+        switch cap {
+        case 0.5: return "half"
+        case 0.25: return "a quarter"
+        default: return "\(Int((cap * 100).rounded()))%"
+        }
     }
 
     /// What the end of a session does about the screen, and why: the decision and the reason for the log in one value.
@@ -48,7 +63,7 @@ public enum BrightnessCeiling {
     ///  · dark, when `leavingADarkScreen`: the lid dimmer holds the screen at 0 with the lid shut. The mode's own turning off asks
     ///    `OwnBrightness` whether another feature holds the screen; the watchdog and a launch after a crash cannot (a new process has
     ///    noted nothing), so they leave a dark screen to whatever put it there.
-    public static func decide(before: Float?, now: Float?, leavingADarkScreen: Bool = false) -> Restoration {
+    public static func decide(before: Float?, now: Float?, ceiling: Float, leavingADarkScreen: Bool = false) -> Restoration {
         guard let before else { return .nothingWasLowered }
         guard let now else { return .couldNotBeRead }
         if leavingADarkScreen, now <= darkAtOrBelow { return .screenIsDark }
@@ -57,8 +72,8 @@ public enum BrightnessCeiling {
     }
 
     /// The brightness to put back at the end, or nil when the screen is to be left as it is (see `decide`).
-    public static func restore(before: Float?, now: Float?, leavingADarkScreen: Bool = false) -> Float? {
-        if case .putBack(let level) = decide(before: before, now: now, leavingADarkScreen: leavingADarkScreen) { return level }
+    public static func restore(before: Float?, now: Float?, ceiling: Float, leavingADarkScreen: Bool = false) -> Float? {
+        if case .putBack(let level) = decide(before: before, now: now, ceiling: ceiling, leavingADarkScreen: leavingADarkScreen) { return level }
         return nil
     }
 }
@@ -107,10 +122,43 @@ public enum RefreshRatePicker {
 // ── Anode's own measuring ───────────────────────────────────────────────────
 
 public enum MeasurementPause {
-    /// Whether Anode's sampling tick runs. It stops while the mode is on and nothing is on screen to read it, and
-    /// never while fans are driven or the charge floor is being watched: those are safety, not measuring.
-    public static func ticks(ultraOn: Bool, windowWorthDrawing: Bool, drivingFans: Bool, chargeWatching: Bool) -> Bool {
-        !ultraOn || windowWorthDrawing || drivingFans || chargeWatching
+    /// While the mode is on the sampling tick still runs, once a minute, and each tick reads only the battery: the drain figure is
+    /// the one thing the owner is still shown, so they can see whether the mode is worth it.
+    public static let interval: TimeInterval = 60
+    /// The first reading after the mode comes on, from a cleared average.
+    public static let firstReading: TimeInterval = 30
+
+    /// The tick's interval: the owner's own sample interval, or the minute the mode holds it to.
+    public static func tickInterval(ultraOn: Bool, setting: TimeInterval) -> TimeInterval {
+        ultraOn ? interval : setting
+    }
+
+    /// Whole seconds until the next reading, for the countdown beside the reading's name: rounded up, never below 0 and
+    /// never above the interval. nil when the mode is off (there is no countdown then) or no reading is scheduled.
+    public static func secondsUntil(_ next: Date?, now: Date, ultraOn: Bool) -> Int? {
+        guard ultraOn, let next else { return nil }
+        return Int(min(max(next.timeIntervalSince(now), 0), interval).rounded(.up))
+    }
+
+    /// How long the gauge's own average covers: it publishes the mean of its last minute.
+    public static let gaugeWindow: TimeInterval = 60
+
+    /// The gauge's age to give the battery-watts rule, or nil to have it read the pack's live current instead. The gauge's figure is
+    /// the mean of the minute before it was published, so one published less than a minute into the mode still holds some of the
+    /// draw from before it (the first reading, thirty seconds in, always does): that figure would make the mode look as if it
+    /// saved less than it does. The live current reads about 9% high against the gauge, a smaller error than half a minute of the
+    /// old draw, and it is only used until a whole window of the mode has been published.
+    public static func gaugeAge(_ age: TimeInterval?, sinceModeStart: TimeInterval) -> TimeInterval? {
+        guard let age, age <= sinceModeStart - gaugeWindow else { return nil }
+        return age
+    }
+
+    /// When the reading after the one at `due` falls: a minute on, kept on the schedule even when the tick ran late, and never in
+    /// the past (a Mac that slept through some of them reads once, then goes on from here).
+    public static func nextReading(after due: Date, now: Date) -> Date {
+        var next = due.addingTimeInterval(interval)
+        if next <= now { next = now.addingTimeInterval(interval) }
+        return next
     }
 }
 

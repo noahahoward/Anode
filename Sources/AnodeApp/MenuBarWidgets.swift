@@ -109,6 +109,45 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     /// Is the app's measuring stopped? Asked at every redraw, on the main thread. The app sets it; until it does, nothing is.
     var isPaused: () -> Bool = { false }
 
+    /// The one reading that is still measured while the rest are paused: the battery's recent rate (the "Now" widget). The mode
+    /// reads the battery once a minute so the owner can see whether it is worth it; a click on it still goes to the mode's menu.
+    static func staysLiveWhilePaused(metricID: String) -> Bool { metricID == MetricID.batteryDrainNow.rawValue }
+
+    /// The widget's name with the seconds to its next reading in brackets, as the mode shows it: "Now (23)". Pure.
+    static func labelWithCountdown(_ label: String, seconds: Int?) -> String {
+        seconds.map { "\(label) (\($0))" } ?? label
+    }
+
+    /// Whole seconds to the next reading while the mode has the readings paused; nil otherwise. The app sets it.
+    var countdownSeconds: () -> Int? = { nil }
+
+    /// A widget that carries the countdown: the live reading, drawn with its name.
+    private static func showsCountdown(_ config: WidgetConfig) -> Bool {
+        config.style == .textWithLabel && staysLiveWhilePaused(metricID: config.metricID)
+    }
+
+    /// Redraws the countdown once a second while there is one to show, and stops itself when there is not (the mode ended, or the
+    /// widget was taken off the bar). Only the labelled text widgets are redrawn, so nothing else on the bar is touched.
+    private var countdownTimer: Timer?
+
+    private func updateCountdownTimer() {
+        let wanted = countdownSeconds() != nil && items.contains { Self.showsCountdown($0.config) }
+        if wanted, countdownTimer == nil {
+            let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.countdownTick() }
+            t.tolerance = 0.2
+            RunLoop.main.add(t, forMode: .common)
+            countdownTimer = t
+        } else if !wanted, let t = countdownTimer {
+            t.invalidate()
+            countdownTimer = nil
+        }
+    }
+
+    private func countdownTick() {
+        for entry in items where Self.showsCountdown(entry.config) { render(entry) }
+        updateCountdownTimer()
+    }
+
     /// A click on any reading while paused goes here, with the reading that was clicked, and not to the usual action: there is
     /// nothing live to open the window onto, and the owner's way out of the mode is on this reading.
     var onPausedClick: ((NSStatusBarButton) -> Void)?
@@ -578,6 +617,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
     deinit {
         if let appearanceToken { DistributedNotificationCenter.default().removeObserver(appearanceToken) }
         placementCheck?.cancel()
+        countdownTimer?.invalidate()
         for token in observers { NotificationCenter.default.removeObserver(token) }
         for token in workspaceObservers {
             NSWorkspace.shared.notificationCenter.removeObserver(token)
@@ -622,6 +662,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         onMain {
             for entry in self.items { self.render(entry) }
             self.refreshOpenPanel()
+            self.updateCountdownTimer()
         }
     }
 
@@ -1123,8 +1164,8 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
         // yet, or honestly unavailable — e.g. time remaining on AC). Both render as
         // a placeholder, not an error.
         let value = descriptor == nil ? nil : registry.value(for: id)
-        // Read once: one redraw is all paused or all not.
-        let paused = isPaused()
+        // Read once per widget: one redraw of it is all paused or all not. The battery's recent rate is not paused with the rest.
+        let paused = isPaused() && !Self.staysLiveWhilePaused(metricID: entry.config.metricID)
 
         if entry.config.style == .sparkline, !paused, let v = value?.value, v.isFinite {
             var h = history[entry.config.metricID, default: []]
@@ -1202,8 +1243,14 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
             // neighbouring menu bar item. Drawing it ourselves makes the geometry
             // exact. Template rendering also means macOS tints it like every other
             // item, so it stays legible on any wallpaper in either appearance.
-            let label = entry.config.style == .textWithLabel
+            var label = entry.config.style == .textWithLabel
                 ? (value?.label ?? descriptor?.shortTitle ?? "?") : nil
+            // The live reading while the others are paused counts down to its next reading.
+            var counting = false
+            if let named = label, Self.staysLiveWhilePaused(metricID: entry.config.metricID), let seconds = countdownSeconds() {
+                label = Self.labelWithCountdown(named, seconds: seconds)
+                counting = true
+            }
             let text = Self.shownValue(paused: paused, value: value?.text ?? "\u{2014}")
             let key = "\(density == .compact ? "c" : "f")\u{1}\(label ?? "")\u{1}\(text)"
             guard lastRendered[itemID] != key else { return }
@@ -1217,7 +1264,7 @@ public final class MenuBarWidgetController: NSObject, NSMenuDelegate {
                 // gauge", a condition that clears within ~60 s — but a bare asterisk
                 // beside a number in the menu bar is uninterpretable and reads as an
                 // error. The tooltip carries it, where there is room to say so.
-                value: text, compact: density == .compact)
+                value: text, compact: density == .compact, fixedDigitLabel: counting)
             assignImage(image, to: button)
             // AppKit pads every variable-length item by 8 pt a side — 16 pt per
             // widget, more than a whole label saves. A squeezed bar sizes the item
@@ -1436,11 +1483,15 @@ enum WidgetRenderer {
     /// 10.5 pt rather than 12, because the label sits ABOVE the value and so
     /// dropping it narrows nothing — at 12 pt a "compact" bar measured wider than
     /// the full one it replaced (474 pt against 447 on a MacBook Neo).
-    static func textImage(label: String?, value: String, compact: Bool = false) -> NSImage {
+    ///
+    /// `fixedDigitLabel`: the label's digits are all as wide as each other. A label that counts down ("Now (23)") would otherwise change
+    /// width every second, and with it the width of the whole status item.
+    static func textImage(label: String?, value: String, compact: Bool = false, fixedDigitLabel: Bool = false) -> NSImage {
         let h = NSStatusBar.system.thickness          // 22pt today, but ask, do not assume
         let valueFont = NSFont.monospacedDigitSystemFont(
             ofSize: label == nil && !compact ? 12 : 10.5, weight: .semibold)
-        let labelFont = NSFont.systemFont(ofSize: 8, weight: .medium)
+        let labelFont = fixedDigitLabel ? NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .medium)
+                                        : NSFont.systemFont(ofSize: 8, weight: .medium)
 
         let vAttrs: [NSAttributedString.Key: Any] = [.font: valueFont, .foregroundColor: NSColor.black]
         let lAttrs: [NSAttributedString.Key: Any] = [.font: labelFont, .foregroundColor: NSColor.black]
@@ -1796,7 +1847,7 @@ extension MenuBarWidgetController: WidgetFolding {
         let descriptor = MetricRegistry.shared.descriptor(for: id)
         let value = descriptor == nil ? nil : MetricRegistry.shared.value(for: id)
         // Paused, the pill says so as the bar does.
-        let paused = isPaused()
+        let paused = isPaused() && !Self.staysLiveWhilePaused(metricID: metricID)
         if !paused, let image = WidgetRenderer.image(style: config.style, descriptor: descriptor, value: value, history: []) { return image }
         let label = config.style == .textWithLabel ? (value?.label ?? descriptor?.shortTitle ?? "?") : nil
         return WidgetRenderer.textImage(label: label, value: Self.shownValue(paused: paused, value: value?.text ?? "\u{2014}"))

@@ -34,6 +34,16 @@ final class PrivacyNoticeTests: XCTestCase {
         XCTAssertEqual(count, 2)
     }
 
+    func testNothingIsSaidOrWrittenUntilTheAppInstallsIt() throws {
+        XCTAssertNil(PrivacyNotice.ask, "a test that turns a feature on must reach neither a box nor the real settings")
+    }
+
+    func testTheAppInstallsItAtLaunch() throws {
+        let main = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("Sources/AnodeApp/main.swift")
+        XCTAssertTrue(try String(contentsOf: main, encoding: .utf8).contains("PrivacyNotice.installForTheApp()"))
+    }
+
     func testAFeatureWhoseDescriptionHasNoSuchSentenceSaysNothing() throws {
         _ = NSApplication.shared
         let (defaults, suite) = try TestDefaults.make(owner: "PrivacyNotice", test: name)
