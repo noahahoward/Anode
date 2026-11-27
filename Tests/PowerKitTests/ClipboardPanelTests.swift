@@ -275,7 +275,7 @@ final class ClipboardPanelTests: XCTestCase {
         let card = M.tintStops(card: true, height: 410)
         XCTAssertGreaterThan(card.first?.gray ?? 0, 0.5, "a bright rim along the card's top")
         let cardTop = card.first { $0.y == 6 }!
-        XCTAssertEqual(cardTop.alpha, 0.55, accuracy: 0.01)
+        XCTAssertEqual(cardTop.alpha, 0.49, accuracy: 0.01, "a little lighter just under the rim")
         XCTAssertEqual(cardTop.gray, 0)
         let cardBottom = card.first { $0.y == 410 - 6 }!
         XCTAssertEqual(cardBottom.alpha, 0.55 - 0.252 * (404.0 / 410), accuracy: 0.01)
