@@ -31,7 +31,7 @@ enum ClipboardPanelMetrics {
 
     // The bar
     static let searchFontSize: CGFloat = 22          // measured: the ink of the real bar's words is 22 points'
-    static let searchLeft: CGFloat = 39              // measured
+    static let searchLeft: CGFloat = 40              // so the ink of the first letter starts where the real one's does
     /// A line's box is centred in the bar, and the letters in it sit a little above that: this brings them to the bar's middle.
     static let searchTextDrop: CGFloat = -0.5          // the baseline 51 points under the bar's top, where the real one is
     static let accessorySize: CGFloat = 33           // measured: the picture at the bar's right
@@ -151,7 +151,8 @@ enum ClipboardPanelMetrics {
         (4.75, 0.04, 0.626), (4.25, 0.04, 0.596), (3.75, 0.05, 0.586), (3.25, 0.06, 0.578), (2.75, 0.08, 0.570),
         (2.25, 0.10, 0.556), (1.75, 0.13, 0.546), (1.25, 0.06, 0.514)]
     /// The card's top rim: its first four half-point rows are hard bands (as they are in the system's), then it ramps off over 3 points.
-    static let cardTopBands: [(gray: CGFloat, alpha: CGFloat)] = [(0.93, 0.698), (0.69, 0.376), (0, 0.478), (0, 0.456)]
+    /// The gradient smooths bands this thin into each other, so these are set by what the screen then shows, not by the fit alone.
+    static let cardTopBands: [(gray: CGFloat, alpha: CGFloat)] = [(1.0, 0.80), (0.74, 0.376), (0, 0.56), (0, 0.50)]
     static let cardTopRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
         (2.25, 0.08, 0.462), (2.75, 0.11, 0.484), (3.25, 0.09, 0.498), (3.75, 0.08, 0.504), (4.25, 0.07, 0.526), (4.75, 0.06, 0.562),
         (5.25, 0.05, 0.572), (5.75, 0.04, 0.578)]
@@ -160,7 +161,7 @@ enum ClipboardPanelMetrics {
     /// different kind) gave it.
     static let cardBottomRim: [(from: CGFloat, gray: CGFloat, alpha: CGFloat)] = [
         (5.75, 0, 0.302), (5.25, 0, 0.297), (4.75, 0, 0.292), (4.25, 0, 0.282), (3.75, 0, 0.272), (3.25, 0, 0.26), (2.75, 0.01, 0.246),
-        (2.25, 0, 0.30), (1.75, 0, 0.364), (1.25, 0, 0.319)]
+        (2.25, 0, 0.31), (1.75, 0, 0.40), (1.25, 0, 0.319)]
     /// What is laid over the glass, from the top down: (how far down in points, a negative one from the bottom; the grey; the opacity).
     static func tintStops(card: Bool, height: CGFloat) -> [(y: CGFloat, gray: CGFloat, alpha: CGFloat)] {
         let h = max(height, 1)
@@ -1213,8 +1214,9 @@ final class ClipboardRowCellView: NSView {
         let right = (pinView.isHidden ? hintField.frame.minX : pinView.frame.minX) - 10
         let width = max(0, right - m.titleLeft)
         let hasSubtitle = !subtitleField.stringValue.isEmpty
-        titleField.frame = NSRect(x: m.titleLeft, y: hasSubtitle ? bounds.height / 2 - 1 : (bounds.height - 22) / 2, width: width, height: 22)
-        subtitleField.frame = NSRect(x: m.titleLeft, y: bounds.height / 2 - 18, width: width, height: 19)
+        // a label draws its text 2 points in from its frame: 1 point less puts the ink where the system's is
+        titleField.frame = NSRect(x: m.titleLeft - 1, y: hasSubtitle ? bounds.height / 2 - 1 : (bounds.height - 22) / 2, width: width, height: 22)
+        subtitleField.frame = NSRect(x: m.titleLeft - 1, y: bounds.height / 2 - 18, width: width, height: 19)
     }
 }
 
