@@ -91,7 +91,13 @@ final class ChargeRecords {
 
     /// The real one: the file in `/Users/Shared/Anode`, logging to the charge log.
     static func live(settings: Settings = .shared) -> ChargeRecords {
-        ChargeRecords(settings: settings, store: ChargeRecordStore(), log: { FeatureLog.append("charge.log", $0) })
+        ChargeRecords(settings: settings, store: liveStore(), log: { FeatureLog.append("charge.log", $0) })
+    }
+
+    /// The shared file, except in the sandboxed test copy (`AppSandbox`): it runs under the person's own account, so it would
+    /// take their running Anode's hold for its own, switch macOS's limit off and empty the record.
+    static func liveStore(sandboxed: Bool = AppSandbox.isOn) -> ChargeRecordStore? {
+        sandboxed ? nil : ChargeRecordStore()
     }
 
     // ── Questions (nothing is created, nothing is written) ──────────────────

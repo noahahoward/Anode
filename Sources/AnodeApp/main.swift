@@ -3304,6 +3304,8 @@ let chargeRecords = ChargeRecords.live()
 // settings back before the app and its settings are deleted. A quit does that already, but an Anode that crashed or
 // was killed never got to, and macOS keeps a limit it was given: it would outlive the app and its settings.
 if CommandLine.arguments.contains(ChargeController.restoreArgument) {
+    // The sandboxed test copy has switched nothing on, and what is on this Mac is the person's own Anode's.
+    if AppSandbox.isOn { exit(0) }
     exit(ChargeController.restoreForUninstallOutcome(settings: .shared, records: chargeRecords,
                                                      helper: ChargeHelperAdapter()).exitCode)
 }
